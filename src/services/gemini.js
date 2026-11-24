@@ -386,6 +386,60 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
     };
   }
 
+  // 4B. Quick Reminder ("ingetin 30 menit lagi angkat jemuran", "ingatkan 2 jam lagi bayar kos")
+  const quickRemMatch = clean.match(
+    /^(?:tolong\s+)?(?:ingetin|ingatkan|remind(?:\s+me)?)\s+(?:aku\s+)?(?:dalam\s+)?(\d{1,3})\s*(menit|mnt|m|jam|j)\s*(?:lagi\s+)?(?:untuk\s+|buat\s+)?(.+)$/i
+  );
+  if (quickRemMatch) {
+    const qty = Number(quickRemMatch[1]);
+    const unit = quickRemMatch[2].toLowerCase();
+    const menit = unit.startsWith('j') ? qty * 60 : qty;
+    const pesan = quickRemMatch[3].trim();
+    if (menit >= 1 && menit <= 1440 && pesan) {
+      return {
+        intent: 'TAMBAH_REMINDER',
+        reply_message: 'Siap, pengingat cepat dipasang!',
+        payload: {
+          menit_tunda: menit,
+          judul: pesan,
+          isi_catatan: pesan,
+        },
+      };
+    }
+  }
+
+  // 4C. Focus / Pomodoro Timer ("mulai fokus 25 menit belajar PCD", "fokus 45 menit ngoding", "pomodoro 25")
+  const focusStartMatch = clean.match(
+    /^(?:mulai\s+)?(?:fokus|focus|pomodoro)(?:\s+(\d{1,3})\s*(?:menit|mnt|m)?)?(?:\s+(.+))?$/i
+  );
+  if (focusStartMatch && !/^(stop|batal|berhenti|cek|status)$/i.test((focusStartMatch[2] || '').trim())) {
+    const durasi = Number(focusStartMatch[1]) || 25;
+    const label = (focusStartMatch[2] || 'Sesi Fokus').trim();
+    return {
+      intent: 'MULAI_FOKUS',
+      reply_message: 'Siap, mode fokus dimulai!',
+      payload: {
+        menit_tunda: Math.max(1, Math.min(240, durasi)),
+        judul: label,
+      },
+    };
+  }
+
+  // 4D. Partner Gift / Date Ideas & Monthly Recap ("ide kado buat dia", "rekomendasi kado pacar", "ide date", "rekap memori bulan ini")
+  if (
+    /\b(ide|saran|rekomendasi|kasih\s+ide)\s+(?:kado|hadiah|kejutan|gift|date|kencan|jalan|nonton|makan)\b/i.test(clean) ||
+    /\b(rekap|rangkum(?:an)?)\s+(?:memori|cerita|kenangan|aktivitas)\s+(?:pacar|dia|bulan\s+ini)\b/i.test(clean)
+  ) {
+    const isRecap = /\b(rekap|rangkum)\b/i.test(clean);
+    return {
+      intent: 'IDE_PACAR',
+      reply_message: isRecap ? 'Menyusun rekap memori bulanan pacarmu...' : 'Menyiapkan rekomendasi personal buat pacarmu...',
+      payload: {
+        kata_kunci: isRecap ? 'REKAP' : clean,
+      },
+    };
+  }
+
   // 5. Check Tasks ("cek tugas", "lihat tugas", "daftar tugas", "ada tugas apa aja?")
   if (
     /^(?:cek|lih?at|daftar|list|info|tampil(?:in|kan)?)\s+(?:semua\s+)?(?:tugas|deadline)(?:\s+aktif)?\??$/i.test(clean) ||
@@ -704,11 +758,13 @@ export const INTENTS = [
   'TAMBAH_JADWAL',
   'CEK_JADWAL',
   'SNOOZE_JADWAL',
+  'TAMBAH_REMINDER',
   'TAMBAH_TUGAS',
   'SELESAI_TUGAS',
   'CEK_TUGAS',
   'SIMPAN_MEMORI',
   'CARI_MEMORI',
+  'IDE_PACAR',
   'TAMBAH_WISHLIST_MOMEN',
   'CEK_WISHLIST_MOMEN',
   'SIMPAN_VAULT',
@@ -717,6 +773,8 @@ export const INTENTS = [
   'CATAT_PENGELUARAN',
   'CATAT_PEMASUKAN',
   'REKAP_PENGELUARAN',
+  'HABIT_CHECKIN',
+  'MULAI_FOKUS',
   'OBROLAN_BIASA',
 ];
 
@@ -1164,7 +1222,11 @@ ATURAN KLASIFIKASI INTENT:
     - Isi payload.tanggal (default ${nowParts.dateStr}).
 13. REKAP_PENGELUARAN: Pengguna meminta rekap keuangan, saldo, pemasukan, atau pengeluaran ("Pengeluaran hari ini berapa?", "rekap keuangan bulan ini", "saldo bulan ini berapa?", "rekap jajan minggu ini").
     - Hitung payload.tanggal_mulai dan payload.tanggal_akhir (YYYY-MM-DD) secara tepat berdasarkan ${nowParts.dateStr}.
-14. OBROLAN_BIASA: Sapaan, pertanyaan umum, atau obrolan santai yang tidak masuk kategori di atas.
+14. TAMBAH_REMINDER: Pengingat cepat berbasis durasi ("ingetin 30 menit lagi matiin kompor", "ingatkan 2 jam lagi bayar kos"). Isi payload.menit_tunda (integer menit) & payload.judul (pesan pengingat).
+15. IDE_PACAR: Pengguna meminta ide kado, ide date/kencan, kejutan buat pacar, atau rangkuman/rekap kenangan bulanan pacar. Isi payload.kata_kunci ("REKAP" jika minta rangkuman bulanan, atau konteks permintaan jika minta ide kado/date).
+16. HABIT_CHECKIN: Pengguna melaporkan sudah menyelesaikan habit harian ("udah olahraga hari ini", "habit ngoding selesai"). Isi payload.kata_kunci dengan nama habit.
+17. MULAI_FOKUS: Pengguna ingin memulai sesi fokus / Pomodoro ("mulai fokus 25 menit belajar PCD"). Isi payload.menit_tunda (durasi menit, default 25) & payload.judul (topik fokus).
+18. OBROLAN_BIASA: Sapaan, pertanyaan umum, atau obrolan santai yang tidak masuk kategori di atas.
 
 Selalu berikan JSON yang valid dan akurat.`;
 }
@@ -1378,4 +1440,112 @@ ATURAN JAWABAN:
   } catch {
     return `Berikut catatan memori pacarmu yang ditemukan:\n${formattedRows}`;
   }
+}
+
+/**
+ * Helper to generate natural text via Groq (primary) -> Gemini (fallback).
+ */
+async function generateFreeformText(systemPrompt, userPrompt, fallbackText, maxTokens = 550) {
+  if (isGroqConfigured()) {
+    try {
+      const text = await callGroqChat({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        chain: GROQ_TEXT_CHAIN,
+        jsonMode: false,
+        temperature: 0.55,
+        maxTokens,
+      });
+      if (text) return text;
+    } catch {
+      // Fallback to Gemini
+    }
+  }
+
+  const client = getClient();
+  if (client) {
+    try {
+      const response = await generateWithFallback(client, (model) => ({
+        model,
+        contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+        config: {
+          systemInstruction: systemPrompt,
+          temperature: 0.55,
+          maxOutputTokens: maxTokens,
+        },
+      }));
+      const out = (response.text || '').trim();
+      if (out) return out;
+    } catch {
+      // fallback below
+    }
+  }
+  return fallbackText;
+}
+
+/**
+ * Feature 5A: Generate personalized gift or date ideas based on partner's Memories & Wishlist.
+ */
+export async function generatePartnerIdeas(userPrompt = 'ide kado dan ide date untuk pacar', { memories = [], wishlists = [], moments = [] } = {}, now = new Date()) {
+  const nowParts = getWibParts(now);
+
+  const memLines = memories.slice(0, 20).map((m) => `- [${m.tanggal}] ${m.isi}${m.deskripsi ? ` (${m.deskripsi})` : ''}`).join('\n') || '- Belum ada catatan memori.';
+  const wishLines = wishlists.filter((w) => !w.terpenuhi).slice(0, 15).map((w) => `- ${w.judul}${w.catatan ? ` (${w.catatan})` : ''}`).join('\n') || '- Belum ada wishlist aktif.';
+  const momentLines = moments.slice(0, 5).map((m) => `- ${m.judul} (${m.next_date || m.tanggal}, H-${m.days_until ?? '?'})`).join('\n') || '- Tidak ada momen dekat.';
+
+  const sysMsg =
+    'Kamu adalah asisten pribadi yang hangat, kreatif, dan perhatian dalam bahasa Indonesia. Berikan rekomendasi kado atau ide kencan/date yang benar-benar personal dengan mengaitkan detail nyata dari Brankas Memori dan Wishlist pacar pengguna. Format rapi dengan poin singkat tanpa bertele-tele.';
+
+  const prompt = `Tanggal hari ini: ${nowParts.display}.
+Permintaan pengguna: "${userPrompt}"
+
+WISHLIST PACAR (belum terpenuhi):
+${wishLines}
+
+CATATAN MEMORI PACAR TERBARU:
+${memLines}
+
+MOMEN SPESIAL TERDEKAT:
+${momentLines}
+
+Berikan 3 sampai 5 rekomendasi ide kado atau ide date yang kreatif, realistis untuk mahasiswa, dan nyambung dengan detail memori/wishlist di atas. Jelaskan singkat kenapa ide tersebut cocok buat dia.`;
+
+  const fallback =
+    `Berikut ringkasan wishlist aktif yang bisa jadi inspirasi kado:\n${wishLines}\n\nCatatan terbaru tentang dia:\n${memLines}`;
+
+  return generateFreeformText(sysMsg, prompt, fallback, 600);
+}
+
+/**
+ * Feature 5B: Monthly Partner Memories Recap (on-demand or triggered automatically on monthly mensiversary!).
+ */
+export async function generateMonthlyPartnerRecap(memories = [], momentTitle = 'Bulan Ini', now = new Date()) {
+  const nowParts = getWibParts(now);
+  if (!memories.length) {
+    return `Belum ada catatan memori pacar dalam 30 hari terakhir untuk dirangkum (${momentTitle}). Yuk mulai catat momen seru dengan */p <cerita>*!`;
+  }
+
+  const memLines = memories
+    .slice(0, 30)
+    .map((m) => `- [${m.hari}, ${m.tanggal}] ${m.isi}${m.deskripsi ? ` — ${m.deskripsi}` : ''}`)
+    .join('\n');
+
+  const sysMsg =
+    'Kamu adalah asisten pribadi yang hangat dan santai dalam bahasa Indonesia. Buat rangkuman bulanan kenangan pacar pengguna ("dia" / "pacarmu", sapa pengguna dengan "kamu") secara menyentuh, ringkas, dan akurat berdasarkan catatan nyata.';
+
+  const prompt = `Hari ini: ${nowParts.display}.
+Konteks rekap: ${momentTitle}.
+
+Catatan memori pacar selama 30 hari terakhir (${memories.length} catatan):
+${memLines}
+
+Susun rekap hangat berisi:
+1. Sorotan momen terbaik & hal penting yang dialami pacarmu bulan ini.
+2. Hal-hal kecil/kebiasaan/kesukaan dia yang muncul di catatan.
+3. 1 kalimat penutup singkat yang hangat untuk merayakan kebersamaan kalian.`;
+
+  const fallback = `💝 *Rekap Memori Pacar (${memories.length} catatan terbaru):*\n${memLines}`;
+  return generateFreeformText(sysMsg, prompt, fallback, 550);
 }

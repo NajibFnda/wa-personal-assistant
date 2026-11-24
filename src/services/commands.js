@@ -4,12 +4,15 @@ import {
   MEMORI_UPLOADS_DIR,
   VAULT_UPLOADS_DIR,
   auditRepo,
+  focusRepo,
+  habitRepo,
   jadwalRepo,
   memoriRepo,
   normalizeCategory,
   normalizeIncomeCategory,
   normalizeRecurrence,
   pengeluaranRepo,
+  reminderRepo,
   resolveUploadPath,
   tugasRepo,
   vaultRepo,
@@ -27,7 +30,9 @@ import {
   normalizeJam,
   shiftDateStr,
 } from '../utils/time.js';
+import { checkBudgetThresholds } from './budget.js';
 import { emitDataChange } from './events.js';
+import { generateMonthlyPartnerRecap, generatePartnerIdeas } from './gemini.js';
 import { getLastReminder } from './notifier.js';
 
 function extensionFromMime(mimeType, fallbackFileName = '') {
@@ -143,6 +148,17 @@ function buildHelpText() {
     '• `/k <item> <nominal>, ...` — Catat pengeluaran',
     '• `/pm <sumber> <nominal>, ...` — Catat pemasukan',
     '• `/rk [hari|minggu|bulan]` — Rekap keuangan & saldo',
+    '',
+    '🔥 *Produktivitas & Pengingat Cepat*',
+    '• `/r <30m|2j> <pesan>` — Pengingat instan (`/r` lihat daftar)',
+    '• `/h` — Lihat habit hari ini & streak',
+    '• `/h + <nama>` — Tambah habit baru',
+    '• `/h <kata kunci>` — Centang habit hari ini',
+    '• `/fokus [menit] [topik]` — Mulai Pomodoro (`/fokus stop`)',
+    '',
+    '💝 *AI Asisten Pacar*',
+    '• `/ide [kado|date]` — Ide kado/date personal dari Memori & Wishlist',
+    '• `/rekappacar` — Rangkuman memori pacar 30 hari terakhir',
     '',
     '🛠️ *Utilitas*',
     '• `/log` — Lihat riwayat login & keamanan web',
@@ -662,6 +678,9 @@ export async function handleSlashCommand({
 
       const created = pengeluaranRepo.createMany(parsedItems, nowParts.dateStr, isIncome ? 'PEMASUKAN' : 'PENGELUARAN');
       emitDataChange('pengeluaran', 'whatsapp');
+      if (!isIncome) {
+        checkBudgetThresholds(nowParts.monthStr).catch(() => {});
+      }
       const total = created.reduce((sum, x) => sum + x.nominal, 0);
       const sign = isIncome ? '+' : '-';
       const lines = created
@@ -720,6 +739,136 @@ export async function handleSlashCommand({
       if (expLines) parts.push(`\n*Rincian Pengeluaran:*\n${expLines}`);
 
       return { text: parts.join('\n') };
+    }
+
+    /* ==================== QUICK REMINDER (/r) ==================== */
+    case 'r': {
+      if (!args) {
+        const active = reminderRepo.list({ selesai: 0 });
+        if (!active.length) {
+          return {
+            text: '⏰ Tidak ada pengingat cepat aktif.\nPasang dengan `/r 30m angkat jemuran` atau `/r 2j bayar kos`.',
+          };
+        }
+        const lines = active.map((r, i) => `${i + 1}. *${r.pesan}* — ${r.trigger_at} WIB`);
+        return { text: `⏰ *Pengingat Cepat Aktif (${active.length}):*\n\n${lines.join('\n')}` };
+      }
+
+      const rMatch = args.match(/^(\d{1,3})\s*(m|mnt|menit|j|jam)?\s+([\s\S]+)$/i);
+      if (!rMatch) {
+        return {
+          text: 'Format: `/r <durasi> <pesan>`\nContoh: `/r 30m angkat jemuran`, `/r 2j minum obat`, atau `/r 15 matiin kompor`.',
+        };
+      }
+      const qty = Number(rMatch[1]);
+      const unit = (rMatch[2] || 'm').toLowerCase();
+      const mins = unit.startsWith('j') ? qty * 60 : qty;
+      const pesan = rMatch[3].trim();
+      if (mins < 1 || mins > 1440) {
+        return { text: 'Durasi pengingat cepat harus antara 1 menit sampai 24 jam.' };
+      }
+      const target = addMinutesWib(mins, now);
+      const saved = reminderRepo.create({ pesan, trigger_at: target.dateTimeStr });
+      emitDataChange('reminder', 'whatsapp');
+      return {
+        text: `⏰ *Pengingat Cepat Dipasang!*\n• Pesan: *${saved.pesan}*\n• Akan berbunyi: *${target.timeStr} WIB* (${target.dateStr}, ${mins} menit lagi)`,
+      };
+    }
+
+    /* ==================== HABIT TRACKER (/h) ==================== */
+    case 'h': {
+      if (!args) {
+        const data = habitRepo.getDashboardData(14, now);
+        if (!data.habits.length) {
+          return {
+            text: '🔥 Belum ada habit yang terdaftar.\nTambah habit baru dengan `/h + Olahraga 30 menit` atau dari Web Dashboard.',
+          };
+        }
+        const lines = data.habits.map(
+          (h, i) => `${i + 1}. ${h.doneToday ? '✅' : '⬜'} *${h.nama}* — 🔥 ${h.streak} hari`
+        );
+        return {
+          text: `🔥 *Habit Harian (${data.summary.doneTodayCount}/${data.summary.totalHabits} selesai):*\n\n${lines.join('\n')}\n\n_Ketik \`/h <nama habit>\` untuk centang, atau \`/h + <habit baru>\` untuk menambah._`,
+        };
+      }
+
+      if (args.startsWith('+')) {
+        const raw = args.slice(1).trim();
+        const [nama, target] = parsePipe(raw);
+        if (!nama) {
+          return { text: 'Format tambah habit: `/h + <nama habit>` atau `/h + Olahraga | 30 menit`' };
+        }
+        const created = habitRepo.create({ nama, target_harian: target });
+        emitDataChange('habits', 'whatsapp');
+        return {
+          text: `🔥 *Habit Baru Ditambahkan:*\n• *${created.nama}*${created.target_harian ? ` (${created.target_harian})` : ''}\nKetik \`/h ${created.nama.split(' ')[0].toLowerCase()}\` setiap hari untuk menjaga streak!`,
+        };
+      }
+
+      const found = habitRepo.findByKeyword(args);
+      if (!found) {
+        return {
+          text: `Habit *"${args}"* belum terdaftar.\nKetik \`/h + ${args}\` untuk menambahkannya, atau \`/h\` untuk lihat daftar habit.`,
+        };
+      }
+      habitRepo.toggleDate(found.id, nowParts.dateStr, true);
+      emitDataChange('habits', 'whatsapp');
+      const updated = habitRepo.getDashboardData(14, now).habits.find((x) => x.id === found.id);
+      return {
+        text: `✅ Mantap! Habit *${found.nama}* tercatat selesai hari ini!\n🔥 Streak saat ini: *${updated?.streak || 1} hari berturut-turut*.`,
+      };
+    }
+
+    /* ==================== FOCUS / POMODORO (/fokus) ==================== */
+    case 'fokus':
+    case 'focus': {
+      if (!args) {
+        const active = focusRepo.getActive();
+        const stats = focusRepo.getTodayStats(now);
+        if (!active) {
+          return {
+            text: `🍅 Tidak ada sesi fokus berjalan.\n📊 Hari ini: *${stats.todaySessions} sesi (${stats.todayMinutes} menit)*.\nMulai dengan \`/fokus 25 belajar PCD\`.`,
+          };
+        }
+        const remMin = Math.max(0, Math.ceil((new Date(active.endsAtIso).getTime() - now.getTime()) / 60000));
+        return {
+          text: `🍅 *Sesi Fokus Sedang Berjalan:*\n• Topik: *${active.label}*\n• Sisa waktu: *±${remMin} menit* (selesai ${active.endsAtDisplay} WIB)\n\n_Ketik \`/fokus stop\` untuk menghentikan._`,
+        };
+      }
+
+      if (/^(stop|batal|berhenti|off)$/i.test(args)) {
+        const stopped = focusRepo.stop();
+        emitDataChange('focus', 'whatsapp');
+        return {
+          text: stopped ? `⏹️ Sesi fokus *${stopped.label}* dihentikan.` : 'Tidak ada sesi fokus yang sedang berjalan.',
+        };
+      }
+
+      const fMatch = args.match(/^(\d{1,3})\s*(?:m|mnt|menit)?(?:\s+([\s\S]+))?$/i);
+      const dur = fMatch ? Number(fMatch[1]) : 25;
+      const label = fMatch ? (fMatch[2] || 'Sesi Fokus').trim() : args.trim();
+      const session = focusRepo.start({ label, durationMinutes: dur, now });
+      emitDataChange('focus', 'whatsapp');
+      return {
+        text: `🍅 *Mode Fokus Dimulai (${session.durationMinutes} menit)!*\n• Topik: *${session.label}*\n• Selesai pukul: *${session.endsAtDisplay} WIB*\n\nFokus dulu ya, nanti aku kabari pas waktunya istirahat!`,
+      };
+    }
+
+    /* ==================== AI PARTNER IDEAS & MONTHLY RECAP ==================== */
+    case 'ide': {
+      const prompt = args || 'Berikan rekomendasi ide kado dan ide date untuk pacar saya';
+      const memories = memoriRepo.list({ limit: 25 });
+      const wishlists = wishlistRepo.list({ tipe: 'WISHLIST' });
+      const moments = wishlistRepo.getUpcomingMoments(60, now);
+      const answer = await generatePartnerIdeas(prompt, { memories, wishlists, moments }, now);
+      return { text: `💝 *Rekomendasi Personal untuk Pacarmu:*\n\n${answer}` };
+    }
+
+    case 'rekappacar': {
+      const sinceDate = shiftDateStr(nowParts.dateStr, -30);
+      const memories = memoriRepo.list({ tanggal_mulai: sinceDate, tanggal_akhir: nowParts.dateStr, limit: 35 });
+      const recap = await generateMonthlyPartnerRecap(memories, `30 Hari Terakhir (${sinceDate} s/d ${nowParts.dateStr})`, now);
+      return { text: `💝 *Rekap Memori Pacar (30 Hari Terakhir):*\n\n${recap}` };
     }
 
     /* ==================== UTILITAS ==================== */

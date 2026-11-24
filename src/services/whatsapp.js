@@ -12,9 +12,12 @@ import {
   MEMORI_UPLOADS_DIR,
   PROJECT_ROOT,
   VAULT_UPLOADS_DIR,
+  focusRepo,
+  habitRepo,
   jadwalRepo,
   memoriRepo,
   pengeluaranRepo,
+  reminderRepo,
   resolveUploadPath,
   tugasRepo,
   vaultRepo,
@@ -30,8 +33,15 @@ import {
   normalizeDeadline,
   normalizeHari,
   normalizeJam,
+  shiftDateStr,
 } from '../utils/time.js';
-import { analyzeMessage, synthesizeMemoryAnswer } from './gemini.js';
+import { checkBudgetThresholds } from './budget.js';
+import {
+  analyzeMessage,
+  generateMonthlyPartnerRecap,
+  generatePartnerIdeas,
+  synthesizeMemoryAnswer,
+} from './gemini.js';
 import { handleSlashCommand } from './commands.js';
 import { emitDataChange } from './events.js';
 import { getLastReminder, registerWhatsAppSender } from './notifier.js';
@@ -904,6 +914,7 @@ export async function executeIntent({
         .join('\n');
 
       emitDataChange('pengeluaran', 'whatsapp');
+      checkBudgetThresholds(tanggal.slice(0, 7)).catch(() => {});
       return {
         text: `${reply_message}\n\n💸 *Pengeluaran Tercatat (${tanggal}):*\n${lines}\n\n*Total Keluar:* ${formatRupiah(total)}`,
       };
@@ -974,6 +985,58 @@ export async function executeIntent({
       if (expCatLines) parts.push(`\n*Rincian Pengeluaran:*\n${expCatLines}`);
 
       return { text: parts.join('\n') };
+    }
+
+    case 'TAMBAH_REMINDER': {
+      const menit = Math.max(1, Math.min(1440, Math.round(Number(payload.menit_tunda) || 15)));
+      const pesan = String(payload.judul || payload.isi_catatan || rawText || 'Pengingat').trim();
+      const target = addMinutesWib(menit, now);
+      const saved = reminderRepo.create({ pesan, trigger_at: target.dateTimeStr });
+      emitDataChange('reminder', 'whatsapp');
+      return {
+        text: `⏰ *Pengingat Cepat Dipasang!*\n• Pesan: *${saved.pesan}*\n• Akan berbunyi: *${target.timeStr} WIB* (${target.dateStr}, ${menit} menit lagi)`,
+      };
+    }
+
+    case 'IDE_PACAR': {
+      const key = String(payload.kata_kunci || '').trim();
+      if (key.toUpperCase() === 'REKAP') {
+        const sinceDate = shiftDateStr(nowParts.dateStr, -30);
+        const memories = memoriRepo.list({ tanggal_mulai: sinceDate, tanggal_akhir: nowParts.dateStr, limit: 35 });
+        const recap = await generateMonthlyPartnerRecap(memories, `30 Hari Terakhir (${sinceDate} s/d ${nowParts.dateStr})`, now);
+        return { text: `💝 *Rekap Memori Pacar (30 Hari Terakhir):*\n\n${recap}` };
+      }
+      const memories = memoriRepo.list({ limit: 25 });
+      const wishlists = wishlistRepo.list({ tipe: 'WISHLIST' });
+      const moments = wishlistRepo.getUpcomingMoments(60, now);
+      const ideas = await generatePartnerIdeas(rawText || key || 'ide kado dan date untuk pacar', { memories, wishlists, moments }, now);
+      return { text: `💝 *Rekomendasi Personal untuk Pacarmu:*\n\n${ideas}` };
+    }
+
+    case 'HABIT_CHECKIN': {
+      const targetKey = String(payload.kata_kunci || payload.judul || rawText || '').trim();
+      const found = habitRepo.findByKeyword(targetKey);
+      if (!found) {
+        return {
+          text: `Habit *"${targetKey}"* belum ditemukan di daftarmu.\nTambah dulu dengan \`/h + ${targetKey}\` atau cek daftar habit dengan \`/h\`.`,
+        };
+      }
+      habitRepo.toggleDate(found.id, nowParts.dateStr, true);
+      emitDataChange('habits', 'whatsapp');
+      const updated = habitRepo.getDashboardData(14, now).habits.find((x) => x.id === found.id);
+      return {
+        text: `✅ Mantap! Habit *${found.nama}* tercatat selesai hari ini!\n🔥 Streak: *${updated?.streak || 1} hari berturut-turut*.`,
+      };
+    }
+
+    case 'MULAI_FOKUS': {
+      const dur = Math.max(1, Math.min(240, Math.round(Number(payload.menit_tunda) || 25)));
+      const label = String(payload.judul || 'Sesi Fokus').trim() || 'Sesi Fokus';
+      const session = focusRepo.start({ label, durationMinutes: dur, now });
+      emitDataChange('focus', 'whatsapp');
+      return {
+        text: `🍅 *Mode Fokus Dimulai (${session.durationMinutes} menit)!*\n• Topik: *${session.label}*\n• Selesai pukul: *${session.endsAtDisplay} WIB*\n\nFokus dulu ya, nanti aku kabari pas waktunya istirahat!`,
+      };
     }
 
     default:

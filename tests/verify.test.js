@@ -678,4 +678,70 @@ describe('All-in-One Personal Assistant End-to-End Verification (Isolated Test D
     const schedOut = await executeIntent({ result: schedIntent, rawText: 'cek jadwal', now: mon });
     assert.match(schedOut.text, /Jadwal/);
   });
+
+  it('8. Power Features: Budget Alert + CSV Export, Quick Reminder (/r), Spotlight Search, Habits (/h), Focus (/fokus)', async () => {
+    const { handleSlashCommand } = await import('../src/services/commands.js');
+    const { checkBudgetThresholds } = await import('../src/services/budget.js');
+    const { checkQuickReminders, checkFocusSessions } = await import('../src/services/scheduler.js');
+    const { tryLocalFastIntent } = await import('../src/services/gemini.js');
+    const now = new Date('2026-11-24T14:00:00+07:00');
+
+    // 1. Budget limit + 80%/100% alert trigger + CSV Export
+    const putBudget = await fetch(`${baseUrl}/api/budgets`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ monthlyLimit: 50000, byCategory: { 'Makan & Minum': 30000 } }),
+    });
+    assert.equal(putBudget.status, 200);
+    const { pengeluaranRepo: expRepoTest, stateRepo: stRepoTest } = await import('../src/config/db.js');
+    stRepoTest.setJson('budget_alerts_sent', {});
+    expRepoTest.create({ tanggal: '2026-11-24', item: 'Makan malam', nominal: 45000, kategori: 'Makan & Minum', tipe: 'PENGELUARAN' });
+    const alerts = await checkBudgetThresholds('2026-11');
+    assert.ok(alerts.some((a) => a.scope === 'total' && a.level >= 80));
+    assert.ok(alerts.some((a) => a.scope === 'Makan & Minum' && a.level === 100));
+
+    const csvRes = await fetch(`${baseUrl}/api/pengeluaran/export?month=2026-11`);
+    assert.equal(csvRes.status, 200);
+    const csvText = await csvRes.text();
+    assert.match(csvText, /Tanggal,Tipe,Item,Kategori,Nominal/);
+    assert.match(csvText, /Makan malam/);
+
+    // 2. Quick Reminder (/r + natural fast-path + scheduler firing)
+    const rCmd = await handleSlashCommand({ text: '/r 15m angkat jemuran', now });
+    assert.match(rCmd.text, /14:15 WIB/);
+    const natRem = tryLocalFastIntent({ text: 'ingetin 30 menit lagi matiin kompor', hasMedia: false, now });
+    assert.equal(natRem?.intent, 'TAMBAH_REMINDER');
+    assert.equal(natRem?.payload?.menit_tunda, 30);
+    const firedRem = await checkQuickReminders(new Date('2026-11-24T14:16:00+07:00'));
+    assert.equal(firedRem, 1);
+
+    // 3. Habit Tracker (/h + add, check-in, API 56-day streak grid)
+    const hAdd = await handleSlashCommand({ text: '/h + Olahraga | 30 menit', now });
+    assert.match(hAdd.text, /Olahraga/);
+    const hCheck = await handleSlashCommand({ text: '/h olahraga', now });
+    assert.match(hCheck.text, /Streak saat ini: \*1 hari/);
+    const habitsApi = await (await fetch(`${baseUrl}/api/habits?days=56`)).json();
+    assert.equal(habitsApi.grid.length, 56);
+    assert.equal(habitsApi.summary.doneTodayCount, 1);
+
+    // 4. Focus / Pomodoro Timer (/fokus + scheduler completion)
+    const fStart = await handleSlashCommand({ text: '/fokus 25 belajar PCD', now });
+    assert.match(fStart.text, /Mode Fokus Dimulai \(25 menit\)/);
+    const fDone = await checkFocusSessions(new Date('2026-11-24T14:26:00+07:00'));
+    assert.equal(fDone, 1);
+    const focusApi = await (await fetch(`${baseUrl}/api/focus`)).json();
+    assert.equal(focusApi.stats.todaySessions, 1);
+    assert.equal(focusApi.stats.todayMinutes, 25);
+
+    // 5. Global Spotlight Search API
+    const searchRes = await (await fetch(`${baseUrl}/api/search?q=olahraga`)).json();
+    assert.ok(searchRes.total >= 1 && searchRes.habits.length >= 1);
+
+    // 6. Natural fast-path for AI Partner Ideas & Recap
+    const ideaIntent = tryLocalFastIntent({ text: 'ide kado buat dia', hasMedia: false, now });
+    assert.equal(ideaIntent?.intent, 'IDE_PACAR');
+    const recapIntent = tryLocalFastIntent({ text: 'rekap memori bulan ini', hasMedia: false, now });
+    assert.equal(recapIntent?.intent, 'IDE_PACAR');
+    assert.equal(recapIntent?.payload?.kata_kunci, 'REKAP');
+  });
 });

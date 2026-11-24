@@ -10,6 +10,7 @@ import {
   normalizeDeadline,
   normalizeHari,
   normalizeJam,
+  shiftDateStr,
 } from '../utils/time.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -121,6 +122,39 @@ db.exec(`
     device_type TEXT DEFAULT 'desktop',
     user_agent TEXT,
     path TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS quick_reminders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pesan TEXT NOT NULL,
+    trigger_at TEXT NOT NULL,
+    selesai INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS habits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nama TEXT NOT NULL,
+    target_harian TEXT DEFAULT '',
+    aktif INTEGER DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS habit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    habit_id INTEGER NOT NULL,
+    tanggal TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(habit_id, tanggal),
+    FOREIGN KEY(habit_id) REFERENCES habits(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS focus_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label TEXT NOT NULL,
+    durasi_menit INTEGER NOT NULL,
+    selesai_pada TEXT NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 `);
@@ -1177,6 +1211,361 @@ export const pengeluaranRepo = {
     return res.changes > 0;
   },
 };
+
+/* ==================== BUDGET BULANAN ==================== */
+export const DEFAULT_BUDGET_CONFIG = {
+  monthlyLimit: 0,
+  byCategory: {
+    'Makan & Minum': 0,
+    Transportasi: 0,
+    Akademik: 0,
+    Hiburan: 0,
+    Lainnya: 0,
+  },
+};
+
+export const budgetRepo = {
+  get() {
+    const saved = stateRepo.getJson('finance_budgets', {}) || {};
+    const byCategory = {};
+    for (const cat of ALLOWED_CATEGORIES) {
+      byCategory[cat] = Math.max(0, Math.round(Number(saved?.byCategory?.[cat]) || 0));
+    }
+    return {
+      monthlyLimit: Math.max(0, Math.round(Number(saved?.monthlyLimit) || 0)),
+      byCategory,
+    };
+  },
+
+  update(patch = {}) {
+    const current = this.get();
+    const monthlyLimit =
+      patch.monthlyLimit !== undefined
+        ? Math.max(0, Math.round(Number(patch.monthlyLimit) || 0))
+        : current.monthlyLimit;
+    const byCategory = { ...current.byCategory };
+    if (patch.byCategory && typeof patch.byCategory === 'object') {
+      for (const cat of ALLOWED_CATEGORIES) {
+        if (patch.byCategory[cat] !== undefined) {
+          byCategory[cat] = Math.max(0, Math.round(Number(patch.byCategory[cat]) || 0));
+        }
+      }
+    }
+    const next = { monthlyLimit, byCategory };
+    stateRepo.setJson('finance_budgets', next);
+    return next;
+  },
+};
+
+/* ==================== QUICK REMINDERS (/r) ==================== */
+export const reminderRepo = {
+  list({ selesai } = {}) {
+    if (selesai !== undefined && selesai !== null && selesai !== '') {
+      return db
+        .prepare('SELECT * FROM quick_reminders WHERE selesai = ? ORDER BY trigger_at ASC, id ASC')
+        .all(Number(selesai) ? 1 : 0);
+    }
+    return db
+      .prepare('SELECT * FROM quick_reminders ORDER BY selesai ASC, trigger_at ASC, id DESC LIMIT 100')
+      .all();
+  },
+
+  getById(id) {
+    return db.prepare('SELECT * FROM quick_reminders WHERE id = ?').get(Number(id));
+  },
+
+  create({ pesan, trigger_at }) {
+    const cleanPesan = String(pesan || '').trim();
+    const cleanTrigger = normalizeDeadline(trigger_at);
+    if (!cleanPesan) throw new Error('Pesan pengingat wajib diisi.');
+    if (!cleanTrigger) throw new Error('Waktu pengingat tidak valid.');
+    const res = db
+      .prepare('INSERT INTO quick_reminders (pesan, trigger_at, selesai) VALUES (?, ?, 0)')
+      .run(cleanPesan, cleanTrigger);
+    return this.getById(res.lastInsertRowid);
+  },
+
+  getDue(nowDateTimeStr) {
+    return db
+      .prepare('SELECT * FROM quick_reminders WHERE selesai = 0 AND trigger_at <= ? ORDER BY trigger_at ASC')
+      .all(nowDateTimeStr);
+  },
+
+  markDone(id) {
+    db.prepare('UPDATE quick_reminders SET selesai = 1 WHERE id = ?').run(Number(id));
+    return this.getById(id);
+  },
+
+  remove(id) {
+    const res = db.prepare('DELETE FROM quick_reminders WHERE id = ?').run(Number(id));
+    return res.changes > 0;
+  },
+};
+
+/* ==================== HABIT TRACKER & STREAK GRID ==================== */
+export const habitRepo = {
+  list({ aktif = 1 } = {}) {
+    if (aktif === 'all' || aktif === undefined || aktif === null) {
+      return db.prepare('SELECT * FROM habits ORDER BY id ASC').all();
+    }
+    return db.prepare('SELECT * FROM habits WHERE aktif = ? ORDER BY id ASC').all(Number(aktif) ? 1 : 0);
+  },
+
+  getById(id) {
+    return db.prepare('SELECT * FROM habits WHERE id = ?').get(Number(id));
+  },
+
+  create({ nama, target_harian = '' }) {
+    const cleanNama = String(nama || '').trim();
+    if (!cleanNama) throw new Error('Nama habit wajib diisi.');
+    const res = db
+      .prepare('INSERT INTO habits (nama, target_harian, aktif) VALUES (?, ?, 1)')
+      .run(cleanNama, String(target_harian || '').trim());
+    return this.getById(res.lastInsertRowid);
+  },
+
+  toggleDate(id, tanggal, forceState = null) {
+    const habit = this.getById(id);
+    if (!habit) return null;
+    const cleanDate = normalizeDateStr(tanggal) || getWibParts().dateStr;
+    const existing = db
+      .prepare('SELECT id FROM habit_logs WHERE habit_id = ? AND tanggal = ?')
+      .get(Number(id), cleanDate);
+
+    let done = false;
+    if (forceState === true) {
+      if (!existing) {
+        db.prepare('INSERT OR IGNORE INTO habit_logs (habit_id, tanggal) VALUES (?, ?)').run(Number(id), cleanDate);
+      }
+      done = true;
+    } else if (forceState === false) {
+      if (existing) {
+        db.prepare('DELETE FROM habit_logs WHERE id = ?').run(existing.id);
+      }
+      done = false;
+    } else if (existing) {
+      db.prepare('DELETE FROM habit_logs WHERE id = ?').run(existing.id);
+      done = false;
+    } else {
+      db.prepare('INSERT OR IGNORE INTO habit_logs (habit_id, tanggal) VALUES (?, ?)').run(Number(id), cleanDate);
+      done = true;
+    }
+    return { habit, tanggal: cleanDate, done };
+  },
+
+  findByKeyword(keyword) {
+    const q = String(keyword || '').trim().toLowerCase();
+    if (!q) return null;
+    const all = this.list({ aktif: 1 });
+    return (
+      all.find((h) => h.nama.toLowerCase() === q) ||
+      all.find((h) => h.nama.toLowerCase().includes(q)) ||
+      all.find((h) => q.includes(h.nama.toLowerCase())) ||
+      null
+    );
+  },
+
+  remove(id) {
+    const res = db.prepare('DELETE FROM habits WHERE id = ?').run(Number(id));
+    return res.changes > 0;
+  },
+
+  getDashboardData(days = 56, now = new Date()) {
+    const todayStr = getWibParts(now).dateStr;
+    const startStr = shiftDateStr(todayStr, -(days - 1));
+    const habits = this.list({ aktif: 1 });
+    const logs = db
+      .prepare('SELECT habit_id, tanggal FROM habit_logs WHERE tanggal >= ? ORDER BY tanggal ASC')
+      .all(shiftDateStr(todayStr, -365));
+
+    const logsByHabit = new Map();
+    const dailyTotals = new Map();
+    for (const row of logs) {
+      if (!logsByHabit.has(row.habit_id)) logsByHabit.set(row.habit_id, new Set());
+      logsByHabit.get(row.habit_id).add(row.tanggal);
+      if (row.tanggal >= startStr && row.tanggal <= todayStr) {
+        dailyTotals.set(row.tanggal, (dailyTotals.get(row.tanggal) || 0) + 1);
+      }
+    }
+
+    const enrichedHabits = habits.map((h) => {
+      const set = logsByHabit.get(h.id) || new Set();
+      const doneToday = set.has(todayStr);
+
+      // Compute current streak (counting back from today if done today, else from yesterday)
+      let streak = 0;
+      let cursor = doneToday ? todayStr : shiftDateStr(todayStr, -1);
+      while (set.has(cursor)) {
+        streak += 1;
+        cursor = shiftDateStr(cursor, -1);
+      }
+
+      // Compute 7-day mini history
+      const last7 = [];
+      for (let i = 6; i >= 0; i -= 1) {
+        const d = shiftDateStr(todayStr, -i);
+        last7.push({ tanggal: d, done: set.has(d) });
+      }
+
+      return {
+        ...h,
+        doneToday,
+        streak,
+        totalCheckins: set.size,
+        last7,
+      };
+    });
+
+    // Build 56-day monochrome contribution grid
+    const totalHabits = habits.length;
+    const grid = [];
+    for (let i = days - 1; i >= 0; i -= 1) {
+      const d = shiftDateStr(todayStr, -i);
+      const count = dailyTotals.get(d) || 0;
+      let level = 0;
+      if (count > 0 && totalHabits > 0) {
+        const ratio = count / totalHabits;
+        if (ratio >= 0.99) level = 4;
+        else if (ratio >= 0.66) level = 3;
+        else if (ratio >= 0.33) level = 2;
+        else level = 1;
+      }
+      grid.push({ tanggal: d, count, total: totalHabits, level });
+    }
+
+    const doneTodayCount = enrichedHabits.filter((h) => h.doneToday).length;
+    const bestStreak = enrichedHabits.reduce((max, h) => Math.max(max, h.streak), 0);
+
+    return {
+      today: todayStr,
+      habits: enrichedHabits,
+      grid,
+      summary: {
+        totalHabits,
+        doneTodayCount,
+        bestStreak,
+      },
+    };
+  },
+};
+
+/* ==================== FOCUS / POMODORO SESSIONS ==================== */
+export const focusRepo = {
+  getActive() {
+    const active = stateRepo.getJson('active_focus_session', null);
+    if (!active || !active.active) return null;
+    return active;
+  },
+
+  start({ label = 'Sesi Fokus', durationMinutes = 25, now = new Date() }) {
+    const dur = Math.max(1, Math.min(240, Math.round(Number(durationMinutes) || 25)));
+    const cleanLabel = String(label || 'Sesi Fokus').trim() || 'Sesi Fokus';
+    const endsAt = new Date(now.getTime() + dur * 60 * 1000);
+    const session = {
+      id: `focus-${Date.now()}`,
+      label: cleanLabel,
+      durationMinutes: dur,
+      startedAtIso: now.toISOString(),
+      endsAtIso: endsAt.toISOString(),
+      endsAtDisplay: getWibParts(endsAt).timeStr,
+      active: true,
+    };
+    stateRepo.setJson('active_focus_session', session);
+    return session;
+  },
+
+  stop() {
+    const prev = this.getActive();
+    stateRepo.setJson('active_focus_session', { active: false });
+    return prev;
+  },
+
+  completeActive(now = new Date()) {
+    const active = this.getActive();
+    if (!active) return null;
+    const parts = getWibParts(now);
+    db.prepare('INSERT INTO focus_sessions (label, durasi_menit, selesai_pada) VALUES (?, ?, ?)').run(
+      active.label,
+      active.durationMinutes,
+      parts.dateTimeStr
+    );
+    stateRepo.setJson('active_focus_session', { active: false });
+    return active;
+  },
+
+  getTodayStats(now = new Date()) {
+    const todayStr = getWibParts(now).dateStr;
+    const row = db
+      .prepare(
+        "SELECT COUNT(*) AS sessions, COALESCE(SUM(durasi_menit), 0) AS totalMinutes FROM focus_sessions WHERE substr(selesai_pada, 1, 10) = ?"
+      )
+      .get(todayStr);
+    const recent = db.prepare('SELECT * FROM focus_sessions ORDER BY id DESC LIMIT 10').all();
+    return {
+      todaySessions: Number(row?.sessions) || 0,
+      todayMinutes: Number(row?.totalMinutes) || 0,
+      recent,
+    };
+  },
+};
+
+/* ==================== GLOBAL SPOTLIGHT SEARCH ==================== */
+export function globalSearch(query, limitPerGroup = 5) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) {
+    return {
+      jadwal: [],
+      tugas: [],
+      memori: [],
+      wishlist: [],
+      vault: [],
+      keuangan: [],
+      habits: [],
+      reminders: [],
+      total: 0,
+    };
+  }
+  const pat = `%${q}%`;
+  const lim = Math.max(1, Math.min(15, Number(limitPerGroup) || 5));
+
+  const jadwal = db
+    .prepare("SELECT * FROM jadwal WHERE lower(nama) LIKE ? OR lower(coalesce(hari, '')) LIKE ? ORDER BY aktif DESC, id DESC LIMIT ?")
+    .all(pat, pat, lim);
+  const tugas = db
+    .prepare("SELECT * FROM tugas WHERE lower(judul) LIKE ? OR lower(coalesce(matkul, '')) LIKE ? ORDER BY selesai ASC, deadline ASC LIMIT ?")
+    .all(pat, pat, lim);
+  const memori = db
+    .prepare("SELECT * FROM memori_pacar WHERE lower(isi) LIKE ? OR lower(coalesce(deskripsi, '')) LIKE ? OR tanggal LIKE ? ORDER BY tanggal DESC, id DESC LIMIT ?")
+    .all(pat, pat, pat, lim);
+  const wishlist = db
+    .prepare("SELECT * FROM momen_wishlist WHERE lower(judul) LIKE ? OR lower(coalesce(catatan, '')) LIKE ? OR coalesce(tanggal, '') LIKE ? ORDER BY id DESC LIMIT ?")
+    .all(pat, pat, pat, lim);
+  const vault = db
+    .prepare('SELECT * FROM vault WHERE lower(kata_kunci) LIKE ? OR lower(konten) LIKE ? ORDER BY id DESC LIMIT ?')
+    .all(pat, pat, lim);
+  const keuangan = db
+    .prepare('SELECT * FROM pengeluaran WHERE lower(item) LIKE ? OR lower(kategori) LIKE ? OR tanggal LIKE ? ORDER BY tanggal DESC, id DESC LIMIT ?')
+    .all(pat, pat, pat, lim)
+    .map((r) => ({ ...r, tipe: normalizeFinanceType(r.tipe) }));
+  const habits = db
+    .prepare("SELECT * FROM habits WHERE aktif = 1 AND (lower(nama) LIKE ? OR lower(coalesce(target_harian, '')) LIKE ?) ORDER BY id DESC LIMIT ?")
+    .all(pat, pat, lim);
+  const reminders = db
+    .prepare('SELECT * FROM quick_reminders WHERE lower(pesan) LIKE ? ORDER BY selesai ASC, trigger_at ASC LIMIT ?')
+    .all(pat, lim);
+
+  const total =
+    jadwal.length +
+    tugas.length +
+    memori.length +
+    wishlist.length +
+    vault.length +
+    keuangan.length +
+    habits.length +
+    reminders.length;
+
+  return { jadwal, tugas, memori, wishlist, vault, keuangan, habits, reminders, total };
+}
 
 /* ==================== SECURITY & ACCESS AUDIT LOGS ==================== */
 export const auditRepo = {

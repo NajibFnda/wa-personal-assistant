@@ -8,7 +8,14 @@ const state = {
   financeChartMode: 'PEMASUKAN',
   financePeriod: 'this_month',
   financePeriodLabel: '',
+  financePeriodQuery: '',
   auditFilter: 'all',
+  habitData: null,
+  reminderList: [],
+  focusData: null,
+  focusPreset: 25,
+  focusTickTimer: null,
+  spotlightTimer: null,
   jadwalList: [],
   tugasList: [],
   memoriList: [],
@@ -1619,6 +1626,11 @@ async function loadPengeluaran() {
       picker.value = periodInfo.pickerMonth;
     }
     state.financePeriodLabel = periodInfo.rangeLabel;
+    state.financePeriodQuery = periodInfo.query;
+    const exportBtn = $('#btn-export-csv');
+    if (exportBtn) {
+      exportBtn.href = `/api/pengeluaran/export?${periodInfo.query}`;
+    }
     state.expenseData = await api(`/api/pengeluaran?${periodInfo.query}`);
     renderPengeluaran(state.expenseData);
   } catch (err) {
@@ -1670,6 +1682,7 @@ function renderPengeluaran(data) {
   if ($('#inc-week')) $('#inc-week').textContent = `Pemasukan 7h: ${formatRupiah(data.weekIncome || 0)}`;
 
   renderExpenseChart(data);
+  renderBudgetCard(data);
 
   const tbody = $('#expense-tbody');
   const empty = $('#expense-empty');
@@ -1845,6 +1858,442 @@ function renderExpenseChart(data) {
 
   barsWrap.innerHTML = summaryRow + catRows;
   renderIcons();
+}
+
+function renderBudgetCard(data) {
+  const wrap = $('#budget-bars-wrap');
+  const sub = $('#budget-status-sub');
+  if (!wrap) return;
+
+  const budget = data?.budget || { monthlyLimit: 0, byCategory: {} };
+  const monthlyLimit = Number(budget.monthlyLimit) || 0;
+  const spentTotal = Number(data?.monthTotal ?? data?.totalExpense ?? 0);
+  const byCategory = budget.byCategory || {};
+  const spentByCat = data?.byCategory || {};
+
+  const rows = [];
+  if (monthlyLimit > 0) {
+    const pct = Math.round((spentTotal / monthlyLimit) * 100);
+    const barW = Math.min(100, pct);
+    const rem = monthlyLimit - spentTotal;
+    const cls = pct >= 100 ? 'is-over' : pct >= 80 ? 'is-warn' : '';
+    rows.push(`
+      <div class="budget-row">
+        <div class="budget-row-head">
+          <strong>Total Bulanan</strong>
+          <span class="mono">${formatRupiah(spentTotal)} / ${formatRupiah(monthlyLimit)} (${pct}%)</span>
+        </div>
+        <div class="budget-bar-track">
+          <div class="budget-bar-fill ${cls}" style="width:${barW}%;"></div>
+        </div>
+        <div class="text-xs muted">
+          ${rem >= 0 ? `Sisa budget: ${formatRupiah(rem)}` : `Melebihi budget sebesar ${formatRupiah(Math.abs(rem))}`}
+        </div>
+      </div>`);
+  }
+
+  for (const cat of EXPENSE_CATEGORIES) {
+    const lim = Number(byCategory[cat]) || 0;
+    if (lim <= 0) continue;
+    const sp = Number(spentByCat[cat]) || 0;
+    const pct = Math.round((sp / lim) * 100);
+    const barW = Math.min(100, pct);
+    const cls = pct >= 100 ? 'is-over' : pct >= 80 ? 'is-warn' : '';
+    rows.push(`
+      <div class="budget-row">
+        <div class="budget-row-head">
+          <span>${escapeHtml(cat)}</span>
+          <span class="mono text-xs">${formatRupiah(sp)} / ${formatRupiah(lim)} (${pct}%)</span>
+        </div>
+        <div class="budget-bar-track">
+          <div class="budget-bar-fill ${cls}" style="width:${barW}%;"></div>
+        </div>
+      </div>`);
+  }
+
+  if (!rows.length) {
+    wrap.innerHTML =
+      '<div class="text-sm muted">Belum ada batas budget yang diatur. Klik <strong>Atur Budget</strong> untuk mengaktifkan peringatan boros otomatis di 80% &amp; 100%.</div>';
+    if (sub) sub.textContent = 'Notifikasi otomatis WA & Push saat tembus 80% dan 100%';
+    return;
+  }
+
+  if (sub && monthlyLimit > 0) {
+    const pct = Math.round((spentTotal / monthlyLimit) * 100);
+    sub.textContent =
+      pct >= 100
+        ? `Peringatan: pengeluaran bulan ini sudah mencapai ${pct}% dari batas!`
+        : pct >= 80
+        ? `Hati-hati: pengeluaran sudah ${pct}% dari batas bulanan.`
+        : `Aman: terpakai ${pct}% dari batas bulanan.`;
+  }
+  wrap.innerHTML = rows.join('');
+}
+
+function openBudgetModal() {
+  const budget = state.expenseData?.budget || { monthlyLimit: 0, byCategory: {} };
+  $('#budget-monthly-limit').value = budget.monthlyLimit || 0;
+  $('#budget-cat-makan').value = budget.byCategory?.['Makan & Minum'] || 0;
+  $('#budget-cat-transport').value = budget.byCategory?.Transportasi || 0;
+  $('#budget-cat-akademik').value = budget.byCategory?.Akademik || 0;
+  $('#budget-cat-hiburan').value = budget.byCategory?.Hiburan || 0;
+  $('#budget-cat-lainnya').value = budget.byCategory?.Lainnya || 0;
+  openModal('modal-budget');
+}
+
+/* ==================== HABIT TRACKER, FOCUS TIMER & QUICK REMINDERS ==================== */
+async function loadHabits() {
+  try {
+    state.habitData = await api('/api/habits?days=56');
+    renderHabits(state.habitData);
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+function renderHabits(data) {
+  const sub = $('#habit-summary-sub');
+  const gridEl = $('#habit-streak-grid');
+  const listEl = $('#habit-list');
+  if (!gridEl || !listEl) return;
+
+  const summary = data?.summary || { totalHabits: 0, doneTodayCount: 0, bestStreak: 0 };
+  if (sub) {
+    sub.textContent = `${summary.doneTodayCount}/${summary.totalHabits} selesai hari ini • Streak terbaik ${summary.bestStreak} hari`;
+  }
+
+  const grid = Array.isArray(data?.grid) ? data.grid : [];
+  gridEl.innerHTML = grid
+    .map(
+      (cell) =>
+        `<span class="hm-cell lvl-${cell.level}" title="${escapeHtml(cell.tanggal)}: ${cell.count}/${cell.total} habit selesai"></span>`
+    )
+    .join('');
+
+  const habits = Array.isArray(data?.habits) ? data.habits : [];
+  if (!habits.length) {
+    listEl.innerHTML =
+      '<div class="text-sm muted">Belum ada habit harian. Klik <strong>+ Habit</strong> atau ketik <code>/h + Olahraga</code> di WhatsApp.</div>';
+    renderIcons();
+    return;
+  }
+
+  listEl.innerHTML = habits
+    .map((h) => {
+      const dots = (h.last7 || [])
+        .map((d) => `<span class="habit-dot ${d.done ? 'on' : ''}" title="${escapeHtml(d.tanggal)}"></span>`)
+        .join('');
+      return `
+      <div class="habit-row ${h.doneToday ? 'is-done' : ''}">
+        <div class="habit-left">
+          <button class="habit-check-btn ${h.doneToday ? 'checked' : ''}" type="button" data-toggle-habit="${h.id}" aria-label="Centang habit">
+            <i data-lucide="check" class="icon-14"></i>
+          </button>
+          <div style="min-width:0;">
+            <div class="fw-600 text-sm">${escapeHtml(h.nama)}</div>
+            <div class="text-xs muted">${h.target_harian ? `${escapeHtml(h.target_harian)} • ` : ''}Streak ${h.streak} hari</div>
+            <div class="habit-dots">${dots}</div>
+          </div>
+        </div>
+        <button class="icon-btn danger" type="button" data-del-habit="${h.id}" title="Hapus Habit" aria-label="Hapus Habit">
+          <i data-lucide="trash-2" class="icon-14"></i>
+        </button>
+      </div>`;
+    })
+    .join('');
+
+  listEl.querySelectorAll('[data-toggle-habit]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try {
+        await api(`/api/habits/${btn.dataset.toggleHabit}/toggle`, {
+          method: 'POST',
+          body: JSON.stringify({ tanggal: getTodayWibStr() }),
+        });
+        loadHabits();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    });
+  });
+
+  listEl.querySelectorAll('[data-del-habit]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Hapus habit ini beserta riwayat streaknya?')) return;
+      try {
+        await api(`/api/habits/${btn.dataset.delHabit}`, { method: 'DELETE' });
+        toast('Habit dihapus.', 'success');
+        loadHabits();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    });
+  });
+
+  renderIcons();
+}
+
+function formatMmSs(totalSec) {
+  const s = Math.max(0, Math.floor(totalSec));
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return `${String(m).padStart(2, '0')}:${String(rem).padStart(2, '0')}`;
+}
+
+async function loadFocus() {
+  try {
+    state.focusData = await api('/api/focus');
+    renderFocus(state.focusData);
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+function renderFocus(data) {
+  if (state.focusTickTimer) {
+    clearInterval(state.focusTickTimer);
+    state.focusTickTimer = null;
+  }
+
+  const active = data?.active;
+  const stats = data?.stats || { todaySessions: 0, todayMinutes: 0 };
+  const clockEl = $('#focus-timer-display');
+  const pillEl = $('#focus-status-pill');
+  const topicEl = $('#focus-active-topic');
+  const statsEl = $('#focus-today-stats');
+  const startBtn = $('#btn-focus-start');
+  const stopBtn = $('#btn-focus-stop');
+
+  if (statsEl) {
+    statsEl.textContent = `Hari ini: ${stats.todaySessions} sesi • ${stats.todayMinutes} menit fokus`;
+  }
+
+  if (!active || !active.active) {
+    if (clockEl) clockEl.textContent = formatMmSs(state.focusPreset * 60);
+    if (pillEl) {
+      pillEl.className = 'pill pill-muted';
+      pillEl.textContent = 'Siap';
+    }
+    if (topicEl) topicEl.textContent = 'Pilih durasi atau kirim /fokus 25 di WhatsApp';
+    startBtn?.classList.remove('hidden');
+    stopBtn?.classList.add('hidden');
+    return;
+  }
+
+  if (pillEl) {
+    pillEl.className = 'pill pill-green';
+    pillEl.textContent = `Aktif • s/d ${active.endsAtDisplay || ''} WIB`;
+  }
+  if (topicEl) topicEl.textContent = `Sedang fokus: ${active.label}`;
+  startBtn?.classList.add('hidden');
+  stopBtn?.classList.remove('hidden');
+
+  const endMs = new Date(active.endsAtIso).getTime();
+  const updateTick = () => {
+    const leftSec = Math.max(0, Math.ceil((endMs - Date.now()) / 1000));
+    if (clockEl) clockEl.textContent = formatMmSs(leftSec);
+    if (leftSec <= 0 && state.focusTickTimer) {
+      clearInterval(state.focusTickTimer);
+      state.focusTickTimer = null;
+      setTimeout(loadFocus, 1800);
+    }
+  };
+  updateTick();
+  state.focusTickTimer = setInterval(updateTick, 1000);
+}
+
+async function loadReminders() {
+  try {
+    state.reminderList = await api('/api/reminders?selesai=0');
+    renderReminders(state.reminderList);
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+function renderReminders(list) {
+  const wrap = $('#reminder-list');
+  if (!wrap) return;
+  if (!list || !list.length) {
+    wrap.innerHTML = '<div class="text-xs muted">Belum ada pengingat cepat aktif. Bisa juga lewat WA: <code>/r 30m angkat jemuran</code>.</div>';
+    return;
+  }
+  wrap.innerHTML = list
+    .map(
+      (r) => `
+      <div class="mini-item">
+        <div>
+          <div class="fw-600 text-sm">${escapeHtml(r.pesan)}</div>
+          <div class="text-xs muted mono">${escapeHtml(r.trigger_at)} WIB</div>
+        </div>
+        <button class="icon-btn danger" type="button" data-del-rem="${r.id}" title="Hapus Pengingat" aria-label="Hapus Pengingat">
+          <i data-lucide="x" class="icon-14"></i>
+        </button>
+      </div>`
+    )
+    .join('');
+
+  wrap.querySelectorAll('[data-del-rem]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try {
+        await api(`/api/reminders/${btn.dataset.delRem}`, { method: 'DELETE' });
+        toast('Pengingat cepat dihapus.', 'success');
+        loadReminders();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    });
+  });
+
+  renderIcons();
+}
+
+/* ==================== GLOBAL SPOTLIGHT SEARCH (CTRL+K) ==================== */
+function openSpotlight() {
+  openModal('modal-spotlight');
+  const inp = $('#spotlight-input');
+  if (inp) {
+    inp.value = '';
+    setTimeout(() => inp.focus(), 40);
+  }
+  const box = $('#spotlight-results');
+  if (box) {
+    box.innerHTML = '<div class="spotlight-empty muted text-sm">Ketik kata kunci untuk mencari di seluruh modul secara instan.</div>';
+  }
+}
+
+async function runSpotlightSearch(q) {
+  const box = $('#spotlight-results');
+  if (!box) return;
+  const clean = String(q || '').trim();
+  if (!clean) {
+    box.innerHTML = '<div class="spotlight-empty muted text-sm">Ketik kata kunci untuk mencari di seluruh modul secara instan.</div>';
+    return;
+  }
+
+  try {
+    const res = await api(`/api/search?q=${encodeURIComponent(clean)}`);
+    if (!res.total) {
+      box.innerHTML = `<div class="spotlight-empty muted text-sm">Tidak ditemukan hasil untuk "${escapeHtml(clean)}".</div>`;
+      return;
+    }
+
+    const groups = [
+      {
+        title: 'Tugas & Deadline',
+        tab: 'tugas',
+        icon: 'check-square',
+        items: (res.tugas || []).map((t) => ({ label: t.judul, meta: `${t.matkul ? `${t.matkul} • ` : ''}${t.deadline}` })),
+      },
+      {
+        title: 'Jadwal & Presensi',
+        tab: 'jadwal',
+        icon: 'calendar-clock',
+        items: (res.jadwal || []).map((j) => ({ label: j.nama, meta: `${j.hari || j.tanggal} • ${j.jam} WIB` })),
+      },
+      {
+        title: 'Brankas Memori',
+        tab: 'memori',
+        icon: 'heart',
+        items: (res.memori || []).map((m) => ({ label: m.isi.slice(0, 72), meta: `${m.hari}, ${m.tanggal}` })),
+      },
+      {
+        title: 'Wishlist & Momen',
+        tab: 'memori',
+        icon: 'gift',
+        items: (res.wishlist || []).map((w) => ({ label: w.judul, meta: `${w.tipe}${w.tanggal ? ` • ${w.tanggal}` : ''}` })),
+      },
+      {
+        title: 'Quick Vault',
+        tab: 'vault',
+        icon: 'folder-lock',
+        items: (res.vault || []).map((v) => ({ label: v.kata_kunci, meta: v.tipe })),
+      },
+      {
+        title: 'Keuangan',
+        tab: 'keuangan',
+        icon: 'wallet',
+        items: (res.keuangan || []).map((k) => ({
+          label: k.item,
+          meta: `${k.tipe === 'PEMASUKAN' ? '+' : '-'}${formatRupiah(k.nominal)} • ${k.tanggal}`,
+        })),
+      },
+      {
+        title: 'Habit & Pengingat Cepat',
+        tab: 'overview',
+        icon: 'flame',
+        items: [
+          ...(res.habits || []).map((h) => ({ label: h.nama, meta: 'Habit Harian' })),
+          ...(res.reminders || []).map((r) => ({ label: r.pesan, meta: `${r.trigger_at} WIB` })),
+        ],
+      },
+    ].filter((g) => g.items.length > 0);
+
+    box.innerHTML = groups
+      .map(
+        (g) => `
+        <div>
+          <div class="spotlight-group-title">${escapeHtml(g.title)}</div>
+          ${g.items
+            .map(
+              (item) => `
+            <button class="spotlight-item" type="button" data-spot-tab="${g.tab}">
+              <span class="spotlight-item-left">
+                <i data-lucide="${g.icon}" class="icon-15 muted"></i>
+                <span class="spotlight-item-title">${escapeHtml(item.label)}</span>
+              </span>
+              <span class="text-xs muted mono">${escapeHtml(item.meta)}</span>
+            </button>`
+            )
+            .join('')}
+        </div>`
+      )
+      .join('');
+
+    box.querySelectorAll('[data-spot-tab]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        closeModal('modal-spotlight');
+        switchTab(btn.dataset.spotTab);
+      });
+    });
+
+    renderIcons();
+  } catch (err) {
+    box.innerHTML = `<div class="spotlight-empty muted text-sm">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+/* ==================== AI PARTNER IDEAS & MONTHLY RECAP ==================== */
+async function openAiPartnerIdeas(customPrompt = '') {
+  $('#ai-insight-title').textContent = 'Ide Kado & Date Personal AI';
+  $('#ai-insight-sub').textContent = 'Disusun otomatis dari Brankas Memori & Wishlist pacarmu';
+  $('#form-ai-ideas-prompt')?.classList.remove('hidden');
+  $('#ai-insight-body').textContent = 'Sedang menganalisis Brankas Memori & Wishlist...';
+  openModal('modal-ai-insight');
+
+  try {
+    const res = await api('/api/memori/ai-ideas', {
+      method: 'POST',
+      body: JSON.stringify({ prompt: customPrompt || 'Berikan rekomendasi ide kado dan ide date untuk pacar saya' }),
+    });
+    $('#ai-insight-body').textContent = res.content || 'Belum ada hasil.';
+  } catch (err) {
+    $('#ai-insight-body').textContent = `Gagal memuat rekomendasi AI: ${err.message}`;
+  }
+}
+
+async function openAiPartnerRecap() {
+  $('#ai-insight-title').textContent = 'Rekap Memori Pacar (30 Hari Terakhir)';
+  $('#ai-insight-sub').textContent = 'Rangkuman momen terbaik bulan ini';
+  $('#form-ai-ideas-prompt')?.classList.add('hidden');
+  $('#ai-insight-body').textContent = 'Menyusun rangkuman kenangan 30 hari terakhir...';
+  openModal('modal-ai-insight');
+
+  try {
+    const res = await api('/api/memori/monthly-recap', { method: 'POST' });
+    $('#ai-insight-body').textContent = res.content || 'Belum ada catatan memori.';
+  } catch (err) {
+    $('#ai-insight-body').textContent = `Gagal menyusun rekap: ${err.message}`;
+  }
 }
 
 /* ==================== FORM & ACTION BINDINGS ==================== */
@@ -2297,6 +2746,147 @@ function bindFormsAndActions() {
     loadAuditLogs();
   });
 
+  // Global Spotlight Search (Ctrl+K / Cmd+K + Header button)
+  $('#btn-open-spotlight')?.addEventListener('click', openSpotlight);
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      if (state.authenticated || !state.pinRequired) openSpotlight();
+    }
+  });
+  $('#spotlight-input')?.addEventListener('input', (e) => {
+    if (state.spotlightTimer) clearTimeout(state.spotlightTimer);
+    const val = e.target.value;
+    state.spotlightTimer = setTimeout(() => runSpotlightSearch(val), 160);
+  });
+
+  // Budget Bulanan modal
+  $('#btn-open-budget-modal')?.addEventListener('click', openBudgetModal);
+  $('#btn-edit-budget-inline')?.addEventListener('click', openBudgetModal);
+  $('#form-budget')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const payload = {
+      monthlyLimit: Number($('#budget-monthly-limit').value) || 0,
+      byCategory: {
+        'Makan & Minum': Number($('#budget-cat-makan').value) || 0,
+        Transportasi: Number($('#budget-cat-transport').value) || 0,
+        Akademik: Number($('#budget-cat-akademik').value) || 0,
+        Hiburan: Number($('#budget-cat-hiburan').value) || 0,
+        Lainnya: Number($('#budget-cat-lainnya').value) || 0,
+      },
+    };
+    try {
+      await api('/api/budgets', { method: 'PUT', body: JSON.stringify(payload) });
+      toast('Batas budget bulanan disimpan.', 'success');
+      closeModal('modal-budget');
+      loadPengeluaran();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+
+  // Habit modal
+  $('#btn-open-habit-modal')?.addEventListener('click', () => {
+    $('#form-habit').reset();
+    openModal('modal-habit');
+  });
+  $('#form-habit')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      await api('/api/habits', {
+        method: 'POST',
+        body: JSON.stringify({
+          nama: $('#habit-nama').value.trim(),
+          target_harian: $('#habit-target').value.trim(),
+        }),
+      });
+      toast('Habit baru ditambahkan.', 'success');
+      closeModal('modal-habit');
+      loadHabits();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+
+  // Focus Timer controls
+  $$('[data-focus-preset]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      $$('[data-focus-preset]').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.focusPreset = Number(btn.dataset.focusPreset) || 25;
+      if (!state.focusData?.active) {
+        const clockEl = $('#focus-timer-display');
+        if (clockEl) clockEl.textContent = formatMmSs(state.focusPreset * 60);
+      }
+    });
+  });
+
+  $('#btn-focus-start')?.addEventListener('click', async () => {
+    const label = $('#focus-label-input')?.value.trim() || (state.focusPreset <= 10 ? 'Istirahat Singkat' : 'Sesi Fokus');
+    try {
+      const res = await api('/api/focus/start', {
+        method: 'POST',
+        body: JSON.stringify({ label, durationMinutes: state.focusPreset }),
+      });
+      state.focusData = res;
+      renderFocus(res);
+      toast(`Mode fokus ${state.focusPreset} menit dimulai.`, 'success');
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+
+  $('#btn-focus-stop')?.addEventListener('click', async () => {
+    try {
+      const res = await api('/api/focus/stop', { method: 'POST' });
+      state.focusData = res;
+      renderFocus(res);
+      toast('Sesi fokus dihentikan.', 'info');
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+
+  // Quick Reminder inline form
+  $('#form-quick-reminder')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const menit = Number($('#quick-rem-mins').value) || 30;
+    const pesan = $('#quick-rem-msg').value.trim();
+    if (!pesan) return;
+    try {
+      await api('/api/reminders', {
+        method: 'POST',
+        body: JSON.stringify({ menit, pesan }),
+      });
+      $('#quick-rem-msg').value = '';
+      toast(`Pengingat dipasang untuk ${menit} menit lagi.`, 'success');
+      loadReminders();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+
+  // AI Partner Ideas & Monthly Recap
+  $('#btn-ai-partner-ideas')?.addEventListener('click', () => {
+    if ($('#ai-ideas-input')) $('#ai-ideas-input').value = '';
+    openAiPartnerIdeas('');
+  });
+  $('#form-ai-ideas-prompt')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const q = $('#ai-ideas-input')?.value.trim() || '';
+    openAiPartnerIdeas(q);
+  });
+  $('#btn-ai-partner-recap')?.addEventListener('click', openAiPartnerRecap);
+  $('#btn-copy-ai-insight')?.addEventListener('click', async () => {
+    const txt = $('#ai-insight-body')?.textContent || '';
+    try {
+      await navigator.clipboard.writeText(txt);
+      toast('Hasil AI berhasil disalin.', 'success');
+    } catch {
+      toast('Gagal menyalin otomatis.', 'error');
+    }
+  });
+
   $('#btn-refresh-audit')?.addEventListener('click', loadAuditLogs);
 
   $('#btn-clear-audit')?.addEventListener('click', async () => {
@@ -2435,6 +3025,9 @@ function connectLiveEvents() {
       else if (mod === 'vault') loadVault();
       else if (mod === 'pengeluaran') loadPengeluaran();
       else if (mod === 'settings') loadWishlist();
+      else if (mod === 'habits') loadHabits();
+      else if (mod === 'focus') loadFocus();
+      else if (mod === 'reminder') loadReminders();
       else if (mod === 'audit') {
         const modal = $('#modal-audit-logs');
         if (modal && !modal.classList.contains('hidden')) loadAuditLogs();
@@ -2447,7 +3040,10 @@ function connectLiveEvents() {
           memori: 'Memori baru masuk dari WhatsApp.',
           wishlist: 'Wishlist atau momen baru dari WhatsApp.',
           vault: 'Item Vault baru masuk dari WhatsApp.',
-          pengeluaran: 'Pengeluaran baru masuk dari WhatsApp.',
+          pengeluaran: 'Transaksi keuangan baru masuk dari WhatsApp.',
+          habits: 'Habit harian diperbarui dari WhatsApp.',
+          focus: 'Status Focus Timer diperbarui dari WhatsApp.',
+          reminder: 'Pengingat cepat baru masuk dari WhatsApp.',
         };
         toast(labels[mod] || 'Data baru masuk dari WhatsApp.', 'success');
       }
@@ -2459,7 +3055,11 @@ function connectLiveEvents() {
 
 function refreshActiveTab() {
   loadStatus();
-  if (state.activeTab === 'jadwal') loadJadwal();
+  if (state.activeTab === 'overview') {
+    loadHabits();
+    loadReminders();
+    loadFocus();
+  } else if (state.activeTab === 'jadwal') loadJadwal();
   else if (state.activeTab === 'tugas') loadTugas();
   else if (state.activeTab === 'memori') {
     loadMemori();
@@ -2472,6 +3072,9 @@ function refreshActiveTab() {
 async function refreshAll() {
   await Promise.all([
     loadStatus(),
+    loadHabits(),
+    loadReminders(),
+    loadFocus(),
     loadJadwal(),
     loadTugas(),
     loadMemori(),

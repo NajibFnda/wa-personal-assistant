@@ -72,6 +72,9 @@
         <div class="island-divider" aria-hidden="true"></div>
 
         <div class="island-actions">
+          <button id="btn-open-spotlight" class="island-icon-btn icon-only" type="button" title="Pencarian Cepat (Ctrl+K)" aria-label="Pencarian Cepat">
+            <i data-lucide="search" class="icon-15"></i>
+          </button>
           <button id="btn-toggle-theme" class="island-icon-btn icon-only" type="button" title="Ubah ke Mode Terang" aria-label="Ubah Tema Gelap atau Terang">
             <i data-lucide="sun" class="icon-15"></i>
           </button>
@@ -314,6 +317,100 @@
             </div>
           </article>
         </div>
+
+        <!-- Productivity Bento Row: Habit Streak Grid + Focus Timer & Quick Reminders -->
+        <div class="two-col-grid">
+          <!-- Habit Tracker & Monochrome Streak Grid -->
+          <article class="glass-card bento-widget">
+            <div class="card-header">
+              <div class="card-title-group">
+                <span class="title-icon"><i data-lucide="flame" class="icon-18"></i></span>
+                <div>
+                  <h3>Habit Tracker &amp; Streak</h3>
+                  <p class="muted text-xs" id="habit-summary-sub">0/0 selesai hari ini • Streak terbaik 0 hari</p>
+                </div>
+              </div>
+              <button id="btn-open-habit-modal" class="btn btn-secondary btn-sm" type="button">
+                <i data-lucide="plus" class="icon-14"></i>
+                <span>Habit</span>
+              </button>
+            </div>
+
+            <div class="habit-heatmap-box">
+              <div class="habit-heatmap-head">
+                <span class="text-xs muted">Aktivitas 8 Minggu Terakhir</span>
+                <div class="heatmap-legend" aria-hidden="true">
+                  <span class="text-xs muted">Kurang</span>
+                  <span class="hm-cell lvl-0"></span>
+                  <span class="hm-cell lvl-1"></span>
+                  <span class="hm-cell lvl-2"></span>
+                  <span class="hm-cell lvl-3"></span>
+                  <span class="hm-cell lvl-4"></span>
+                  <span class="text-xs muted">Penuh</span>
+                </div>
+              </div>
+              <div id="habit-streak-grid" class="habit-heatmap-grid"></div>
+            </div>
+
+            <div id="habit-list" class="list-stack"></div>
+          </article>
+
+          <!-- Pomodoro Focus Timer & Quick Reminders -->
+          <article class="glass-card bento-widget stack-md">
+            <div>
+              <div class="card-header">
+                <div class="card-title-group">
+                  <span class="title-icon"><i data-lucide="timer" class="icon-18"></i></span>
+                  <div>
+                    <h3>Focus Timer (Pomodoro)</h3>
+                    <p class="muted text-xs" id="focus-today-stats">Hari ini: 0 sesi • 0 menit fokus</p>
+                  </div>
+                </div>
+                <span id="focus-status-pill" class="pill pill-muted">Siap</span>
+              </div>
+
+              <div class="focus-panel">
+                <div class="focus-clock mono" id="focus-timer-display">25:00</div>
+                <div class="focus-topic-live text-xs muted" id="focus-active-topic">Pilih durasi atau kirim /fokus 25 di WhatsApp</div>
+                <div class="focus-presets">
+                  <button class="filter-pill active" type="button" data-focus-preset="25">25m</button>
+                  <button class="filter-pill" type="button" data-focus-preset="45">45m</button>
+                  <button class="filter-pill" type="button" data-focus-preset="50">50m</button>
+                  <button class="filter-pill" type="button" data-focus-preset="5">5m Istirahat</button>
+                </div>
+                <div class="focus-controls">
+                  <input id="focus-label-input" type="text" placeholder="Topik fokus (misal: Belajar PCD)..." />
+                  <button id="btn-focus-start" class="btn btn-primary btn-sm" type="button">
+                    <i data-lucide="play" class="icon-14"></i>
+                    <span>Mulai</span>
+                  </button>
+                  <button id="btn-focus-stop" class="btn btn-danger-ghost btn-sm hidden" type="button">
+                    <i data-lucide="square" class="icon-14"></i>
+                    <span>Hentikan</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div class="quick-rem-section">
+              <div class="card-header compact-head">
+                <div class="card-title-group">
+                  <span class="title-icon"><i data-lucide="bell-plus" class="icon-16"></i></span>
+                  <h3>Pengingat Cepat (/r)</h3>
+                </div>
+              </div>
+              <form id="form-quick-reminder" class="quick-rem-form">
+                <input id="quick-rem-mins" type="number" min="1" max="1440" value="30" aria-label="Menit" title="Menit dari sekarang" required />
+                <input id="quick-rem-msg" type="text" placeholder="Menit lagi ingetin... (misal: Angkat jemuran)" required />
+                <button class="btn btn-secondary btn-sm" type="submit">
+                  <i data-lucide="plus" class="icon-14"></i>
+                  <span>Pasang</span>
+                </button>
+              </form>
+              <div id="reminder-list" class="list-stack"></div>
+            </div>
+          </article>
+        </div>
       </section>
 
       <!-- ==================== TAB 2: JADWAL & PRESENSI ==================== -->
@@ -399,6 +496,14 @@
             <button id="btn-open-wishlist-modal" class="btn btn-secondary" type="button">
               <i data-lucide="gift" class="icon-16"></i>
               <span>Wishlist / Momen</span>
+            </button>
+            <button id="btn-ai-partner-ideas" class="btn btn-secondary" type="button">
+              <i data-lucide="sparkles" class="icon-16"></i>
+              <span>Ide Kado / Date</span>
+            </button>
+            <button id="btn-ai-partner-recap" class="btn btn-secondary" type="button">
+              <i data-lucide="file-text" class="icon-16"></i>
+              <span>Rekap Bulanan</span>
             </button>
             <button class="btn btn-secondary" type="button" data-open-notif-settings>
               <i data-lucide="sliders-horizontal" class="icon-16"></i>
@@ -503,6 +608,14 @@
           </div>
           <div class="header-actions">
             <input id="expense-month-picker" type="month" aria-label="Pilih bulan rekap" />
+            <button id="btn-open-budget-modal" class="btn btn-secondary" type="button">
+              <i data-lucide="sliders-horizontal" class="icon-16"></i>
+              <span>Atur Budget</span>
+            </button>
+            <a id="btn-export-csv" class="btn btn-secondary" href="/api/pengeluaran/export" download>
+              <i data-lucide="download" class="icon-16"></i>
+              <span>Export CSV</span>
+            </a>
             <button id="btn-open-income-modal" class="btn btn-secondary" type="button">
               <i data-lucide="arrow-down-left" class="icon-16"></i>
               <span>Pemasukan</span>
@@ -550,6 +663,24 @@
             <div class="kpi-value mono" id="exp-week">Rp 0</div>
             <div class="kpi-sub" id="inc-week">Pemasukan 7h: Rp 0</div>
           </article>
+        </div>
+
+        <!-- Monthly Budget Status Bar -->
+        <div class="glass-card budget-card" id="budget-card">
+          <div class="card-header compact-head">
+            <div class="card-title-group">
+              <span class="title-icon"><i data-lucide="gauge" class="icon-18"></i></span>
+              <div>
+                <h3>Budget Bulanan &amp; Peringatan Boros</h3>
+                <p class="muted text-xs" id="budget-status-sub">Notifikasi otomatis WA &amp; Push saat tembus 80% dan 100%</p>
+              </div>
+            </div>
+            <button class="btn btn-ghost btn-sm" type="button" id="btn-edit-budget-inline">
+              <i data-lucide="pencil" class="icon-14"></i>
+              <span>Ubah Batas</span>
+            </button>
+          </div>
+          <div id="budget-bars-wrap" class="budget-bars-wrap"></div>
         </div>
 
         <div class="two-col-grid">
@@ -1198,6 +1329,137 @@
         <p class="text-xs muted">
           Catatan: Lokasi merupakan perkiraan kota/provinsi &amp; ISP berdasarkan alamat IP publik. Percobaan PIN salah otomatis mengirim peringatan ke WhatsApp.
         </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Spotlight Global Search (Ctrl+K) -->
+  <div id="modal-spotlight" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="spotlight-input">
+    <div class="modal-backdrop" data-close-modal="modal-spotlight"></div>
+    <div class="modal-content spotlight-modal">
+      <div class="spotlight-bar">
+        <i data-lucide="search" class="icon-18 muted"></i>
+        <input id="spotlight-input" type="search" placeholder="Cari tugas, jadwal, memori pacar, wishlist, vault, transaksi, habit..." autocomplete="off" />
+        <kbd class="kbd-hint">ESC</kbd>
+      </div>
+      <div id="spotlight-results" class="spotlight-results">
+        <div class="spotlight-empty muted text-sm">Ketik kata kunci untuk mencari di seluruh modul secara instan.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Atur Budget Bulanan -->
+  <div id="modal-budget" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" data-close-modal="modal-budget"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Atur Budget Bulanan</h3>
+        <button class="icon-btn" type="button" data-close-modal="modal-budget" aria-label="Tutup">
+          <i data-lucide="x" class="icon-16"></i>
+        </button>
+      </div>
+      <form id="form-budget" class="stack-md">
+        <label class="field">
+          <span>Batas Total Pengeluaran per Bulan (Rp, isi 0 untuk nonaktif)</span>
+          <input id="budget-monthly-limit" type="number" min="0" step="10000" placeholder="Contoh: 1500000" />
+        </label>
+        <div class="settings-box">
+          <div class="settings-box-title">
+            <i data-lucide="layers" class="icon-15"></i>
+            <span>Batas per Kategori (Opsional, 0 = tanpa batas)</span>
+          </div>
+          <div class="form-row">
+            <label class="field">
+              <span>Makan &amp; Minum</span>
+              <input id="budget-cat-makan" type="number" min="0" step="10000" placeholder="0" />
+            </label>
+            <label class="field">
+              <span>Transportasi</span>
+              <input id="budget-cat-transport" type="number" min="0" step="10000" placeholder="0" />
+            </label>
+          </div>
+          <div class="form-row">
+            <label class="field">
+              <span>Akademik</span>
+              <input id="budget-cat-akademik" type="number" min="0" step="10000" placeholder="0" />
+            </label>
+            <label class="field">
+              <span>Hiburan</span>
+              <input id="budget-cat-hiburan" type="number" min="0" step="10000" placeholder="0" />
+            </label>
+          </div>
+          <label class="field">
+            <span>Lainnya</span>
+            <input id="budget-cat-lainnya" type="number" min="0" step="10000" placeholder="0" />
+          </label>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close-modal="modal-budget">Batal</button>
+          <button type="submit" class="btn btn-primary">Simpan Budget</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal Tambah Habit -->
+  <div id="modal-habit" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" data-close-modal="modal-habit"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Tambah Habit Harian</h3>
+        <button class="icon-btn" type="button" data-close-modal="modal-habit" aria-label="Tutup">
+          <i data-lucide="x" class="icon-16"></i>
+        </button>
+      </div>
+      <form id="form-habit" class="stack-md">
+        <label class="field">
+          <span>Nama Habit</span>
+          <input id="habit-nama" type="text" placeholder="Contoh: Olahraga / Ngoding / Minum Air 2L" required />
+        </label>
+        <label class="field">
+          <span>Target Harian (Opsional)</span>
+          <input id="habit-target" type="text" placeholder="Contoh: 30 menit / 1 jam" />
+        </label>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close-modal="modal-habit">Batal</button>
+          <button type="submit" class="btn btn-primary">Simpan Habit</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal AI Insight Pacar (Ide Kado / Date & Rekap Bulanan) -->
+  <div id="modal-ai-insight" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="ai-insight-title">
+    <div class="modal-backdrop" data-close-modal="modal-ai-insight"></div>
+    <div class="modal-content modal-content-lg">
+      <div class="modal-header">
+        <div class="card-title-group">
+          <span class="title-icon"><i data-lucide="sparkles" class="icon-18"></i></span>
+          <div>
+            <h3 id="ai-insight-title">Rekomendasi Personal AI</h3>
+            <p class="text-xs muted" id="ai-insight-sub">Berdasarkan Brankas Memori &amp; Wishlist pacarmu</p>
+          </div>
+        </div>
+        <button class="icon-btn" type="button" data-close-modal="modal-ai-insight" aria-label="Tutup">
+          <i data-lucide="x" class="icon-16"></i>
+        </button>
+      </div>
+      <div class="stack-md">
+        <form id="form-ai-ideas-prompt" class="search-row">
+          <input id="ai-ideas-input" type="text" placeholder="Tanya spesifik (misal: ide kado budget 150rb / ide date hujan)..." />
+          <button class="btn btn-primary btn-sm" type="submit">
+            <i data-lucide="sparkles" class="icon-14"></i>
+            <span>Tanya AI</span>
+          </button>
+        </form>
+        <div id="ai-insight-body" class="ai-insight-box">Memuat analisis AI...</div>
+        <div class="modal-footer">
+          <button id="btn-copy-ai-insight" type="button" class="btn btn-secondary btn-sm">
+            <i data-lucide="copy" class="icon-14"></i>
+            <span>Salin Hasil</span>
+          </button>
+          <button type="button" class="btn btn-primary btn-sm" data-close-modal="modal-ai-insight">Tutup</button>
+        </div>
       </div>
     </div>
   </div>

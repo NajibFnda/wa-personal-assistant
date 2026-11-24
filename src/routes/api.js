@@ -11,12 +11,17 @@ import {
   PROJECT_ROOT,
   VAULT_UPLOADS_DIR,
   auditRepo,
+  budgetRepo,
   createConsistentBackup,
+  focusRepo,
   getDatabaseStats,
+  globalSearch,
+  habitRepo,
   jadwalRepo,
   memoriRepo,
   pengeluaranRepo,
   pushRepo,
+  reminderRepo,
   resolveUploadPath,
   settingsRepo,
   tugasRepo,
@@ -24,8 +29,14 @@ import {
   wishlistRepo,
 } from '../config/db.js';
 import { recordAccessEvent } from '../services/audit.js';
+import { checkBudgetThresholds } from '../services/budget.js';
 import { emitDataChange, onDataChange } from '../services/events.js';
-import { getActiveModelName, isGeminiConfigured } from '../services/gemini.js';
+import {
+  generateMonthlyPartnerRecap,
+  generatePartnerIdeas,
+  getActiveModelName,
+  isGeminiConfigured,
+} from '../services/gemini.js';
 import { isWebPushConfigured, sendDualNotification } from '../services/notifier.js';
 import { reloadScheduler, runMorningBriefing, runWeeklyBackup } from '../services/scheduler.js';
 import {
@@ -33,7 +44,7 @@ import {
   initWhatsApp,
   logoutWhatsApp,
 } from '../services/whatsapp.js';
-import { formatCountdown, getWibParts, shiftDateStr } from '../utils/time.js';
+import { addMinutesWib, formatCountdown, getWibParts, shiftDateStr } from '../utils/time.js';
 
 const router = express.Router();
 
@@ -660,6 +671,7 @@ router.get('/pengeluaran', (req, res) => {
     selectedMonth: month || null,
     categories: ALLOWED_CATEGORIES,
     incomeCategories: INCOME_CATEGORIES,
+    budget: budgetRepo.get(),
     todayTotal: todaySummary.totalExpense,
     todayIncome: todaySummary.totalIncome,
     weekTotal: weekSummary.totalExpense,
@@ -670,15 +682,58 @@ router.get('/pengeluaran', (req, res) => {
   });
 });
 
+router.get('/pengeluaran/export', (req, res) => {
+  const parts = getWibParts();
+  const month = req.query.month || (!req.query.tanggal_mulai && !req.query.tanggal_akhir ? parts.monthStr : undefined);
+  const summary = pengeluaranRepo.getSummary({
+    month,
+    tanggal_mulai: req.query.tanggal_mulai,
+    tanggal_akhir: req.query.tanggal_akhir,
+  });
+
+  const csvEscape = (v) => {
+    const s = String(v ?? '');
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+
+  const rows = [
+    ['Tanggal', 'Tipe', 'Item', 'Kategori', 'Nominal (Rp)'],
+    ...summary.items.map((item) => [
+      item.tanggal,
+      item.tipe === 'PEMASUKAN' ? 'Pemasukan' : 'Pengeluaran',
+      item.item,
+      item.kategori,
+      item.nominal,
+    ]),
+    [],
+    ['RINGKASAN', 'Total Pemasukan', '', '', summary.totalIncome],
+    ['RINGKASAN', 'Total Pengeluaran', '', '', summary.totalExpense],
+    ['RINGKASAN', 'Saldo Bersih', '', '', summary.balance],
+  ];
+
+  const csvBody = '\uFEFF' + rows.map((r) => r.map(csvEscape).join(',')).join('\r\n');
+  const suffix = month || `${req.query.tanggal_mulai || parts.dateStr}_to_${req.query.tanggal_akhir || parts.dateStr}`;
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="keuangan-${suffix}.csv"`);
+  res.send(csvBody);
+});
+
 router.post('/pengeluaran', (req, res) => {
   try {
     if (Array.isArray(req.body?.items)) {
       const created = pengeluaranRepo.createMany(req.body.items, req.body.tanggal, req.body.tipe);
       emitDataChange('pengeluaran', 'api');
+      if (created.some((x) => x.tipe !== 'PEMASUKAN')) {
+        const month = (created[0]?.tanggal || getWibParts().dateStr).slice(0, 7);
+        checkBudgetThresholds(month).catch(() => {});
+      }
       return res.status(201).json(created);
     }
     const created = pengeluaranRepo.create(req.body || {});
     emitDataChange('pengeluaran', 'api');
+    if (created.tipe !== 'PEMASUKAN') {
+      checkBudgetThresholds((created.tanggal || getWibParts().dateStr).slice(0, 7)).catch(() => {});
+    }
     return res.status(201).json(created);
   } catch (err) {
     return res.status(400).json({ error: err.message });
@@ -690,6 +745,145 @@ router.delete('/pengeluaran/:id', (req, res) => {
   if (!deleted) return res.status(404).json({ error: 'Catatan keuangan tidak ditemukan.' });
   emitDataChange('pengeluaran', 'api');
   return res.json({ ok: true });
+});
+
+/* ==================== BUDGET BULANAN ==================== */
+router.get('/budgets', (_req, res) => {
+  res.json(budgetRepo.get());
+});
+
+router.put('/budgets', (req, res) => {
+  try {
+    const updated = budgetRepo.update(req.body || {});
+    emitDataChange('pengeluaran', 'api');
+    res.json(updated);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+/* ==================== GLOBAL SPOTLIGHT SEARCH ==================== */
+router.get('/search', (req, res) => {
+  const q = String(req.query.q || '').trim();
+  const limit = Number(req.query.limit) || 6;
+  res.json(globalSearch(q, limit));
+});
+
+/* ==================== QUICK REMINDERS (/r) ==================== */
+router.get('/reminders', (req, res) => {
+  const selesai = req.query.selesai !== undefined ? req.query.selesai : 0;
+  res.json(reminderRepo.list({ selesai }));
+});
+
+router.post('/reminders', (req, res) => {
+  try {
+    const pesan = String(req.body?.pesan || '').trim();
+    let triggerAt = req.body?.trigger_at;
+    if (!triggerAt && req.body?.menit) {
+      const mins = Math.max(1, Math.min(1440, Math.round(Number(req.body.menit))));
+      triggerAt = addMinutesWib(mins).dateTimeStr;
+    }
+    const created = reminderRepo.create({ pesan, trigger_at: triggerAt });
+    emitDataChange('reminder', 'api');
+    res.status(201).json(created);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.delete('/reminders/:id', (req, res) => {
+  const deleted = reminderRepo.remove(req.params.id);
+  if (!deleted) return res.status(404).json({ error: 'Pengingat tidak ditemukan.' });
+  emitDataChange('reminder', 'api');
+  res.json({ ok: true });
+});
+
+/* ==================== HABIT TRACKER & STREAK GRID ==================== */
+router.get('/habits', (req, res) => {
+  const days = Math.max(7, Math.min(90, Number(req.query.days) || 56));
+  res.json(habitRepo.getDashboardData(days));
+});
+
+router.post('/habits', (req, res) => {
+  try {
+    const created = habitRepo.create(req.body || {});
+    emitDataChange('habits', 'api');
+    res.status(201).json(created);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/habits/:id/toggle', (req, res) => {
+  const tanggal = req.body?.tanggal || getWibParts().dateStr;
+  const result = habitRepo.toggleDate(req.params.id, tanggal);
+  if (!result) return res.status(404).json({ error: 'Habit tidak ditemukan.' });
+  emitDataChange('habits', 'api');
+  res.json(result);
+});
+
+router.delete('/habits/:id', (req, res) => {
+  const deleted = habitRepo.remove(req.params.id);
+  if (!deleted) return res.status(404).json({ error: 'Habit tidak ditemukan.' });
+  emitDataChange('habits', 'api');
+  res.json({ ok: true });
+});
+
+/* ==================== FOCUS / POMODORO TIMER ==================== */
+router.get('/focus', (_req, res) => {
+  const now = new Date();
+  const active = focusRepo.getActive();
+  const stats = focusRepo.getTodayStats(now);
+  res.json({
+    active,
+    stats,
+    serverNowIso: now.toISOString(),
+  });
+});
+
+router.post('/focus/start', (req, res) => {
+  try {
+    const session = focusRepo.start({
+      label: req.body?.label || 'Sesi Fokus',
+      durationMinutes: req.body?.durationMinutes || 25,
+    });
+    emitDataChange('focus', 'api');
+    res.status(201).json({ active: session, stats: focusRepo.getTodayStats(), serverNowIso: new Date().toISOString() });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/focus/stop', (_req, res) => {
+  focusRepo.stop();
+  emitDataChange('focus', 'api');
+  res.json({ ok: true, active: null, stats: focusRepo.getTodayStats() });
+});
+
+/* ==================== AI PARTNER GIFT/DATE IDEAS & MONTHLY RECAP ==================== */
+router.post('/memori/ai-ideas', async (req, res) => {
+  try {
+    const prompt = String(req.body?.prompt || 'Berikan rekomendasi ide kado dan ide date untuk pacar saya').trim();
+    const memories = memoriRepo.list({ limit: 25 });
+    const wishlists = wishlistRepo.list({ tipe: 'WISHLIST' });
+    const moments = wishlistRepo.getUpcomingMoments(60);
+    const content = await generatePartnerIdeas(prompt, { memories, wishlists, moments });
+    res.json({ content, memoriesUsed: memories.length, wishlistsUsed: wishlists.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/memori/monthly-recap', async (_req, res) => {
+  try {
+    const parts = getWibParts();
+    const sinceDate = shiftDateStr(parts.dateStr, -30);
+    const memories = memoriRepo.list({ tanggal_mulai: sinceDate, tanggal_akhir: parts.dateStr, limit: 35 });
+    const content = await generateMonthlyPartnerRecap(memories, `30 Hari Terakhir (${sinceDate} s/d ${parts.dateStr})`);
+    res.json({ content, count: memories.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 /* ==================== SECURITY & ACCESS AUDIT LOGS ==================== */

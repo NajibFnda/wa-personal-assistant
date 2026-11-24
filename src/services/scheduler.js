@@ -4,8 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   createConsistentBackup,
+  focusRepo,
   getDatabaseStats,
+  habitRepo,
   jadwalRepo,
+  memoriRepo,
+  reminderRepo,
   settingsRepo,
   stateRepo,
   tugasRepo,
@@ -19,6 +23,7 @@ import {
   shiftDateStr,
 } from '../utils/time.js';
 import { emitDataChange } from './events.js';
+import { generateMonthlyPartnerRecap } from './gemini.js';
 import { sendDualNotification } from './notifier.js';
 import { sendDocumentToOwner } from './whatsapp.js';
 
@@ -160,9 +165,103 @@ export async function checkSpecialMoments(now = new Date(), { ignoreHourGate = f
 
     stateRepo.set(stateKey, parts.dateTimeStr);
     triggered += 1;
+
+    // Feature 5B: On monthly moment Hari H (e.g. Mensiversary), also send AI Monthly Partner Recap!
+    if (moment.ulang === 'BULANAN' && moment.days_until === 0 && process.env.NODE_ENV !== 'test') {
+      const recapKey = `monthly_partner_recap:${moment.id}:${parts.monthStr}`;
+      if (!stateRepo.get(recapKey)) {
+        const sinceDate = shiftDateStr(parts.dateStr, -30);
+        const recentMemories = memoriRepo.list({ tanggal_mulai: sinceDate, tanggal_akhir: parts.dateStr, limit: 30 });
+        if (recentMemories.length > 0) {
+          const recapText = await generateMonthlyPartnerRecap(recentMemories, moment.judul, now).catch(() => null);
+          if (recapText) {
+            await sendDualNotification(`💝 Rekap Bulanan — ${moment.judul}`, recapText, '/#memori', {
+              recordForSnooze: false,
+              tag: recapKey,
+            }).catch(() => {});
+            stateRepo.set(recapKey, parts.dateTimeStr);
+          }
+        }
+      }
+    }
   }
 
   return triggered;
+}
+
+/**
+ * Feature 2: Quick Reminders (/r) minute-level check.
+ */
+export async function checkQuickReminders(now = new Date()) {
+  const parts = getWibParts(now);
+  const due = reminderRepo.getDue(parts.dateTimeStr);
+  let triggered = 0;
+
+  for (const rem of due) {
+    reminderRepo.markDone(rem.id);
+    const body = `Waktunya: *${rem.pesan}*\n🕐 ${rem.trigger_at} WIB\n\n_Balas "/s 10" untuk tunda 10 menit lagi._`;
+    await sendDualNotification(`⏰ Pengingat Cepat`, body, '/', {
+      recordForSnooze: true,
+      activityName: rem.pesan,
+      tag: `quick-rem-${rem.id}`,
+    });
+    emitDataChange('reminder', 'scheduler');
+    triggered += 1;
+  }
+
+  return triggered;
+}
+
+/**
+ * Feature 7: Check if active Focus / Pomodoro session has reached its end time.
+ */
+export async function checkFocusSessions(now = new Date()) {
+  const active = focusRepo.getActive();
+  if (!active || !active.endsAtIso) return 0;
+
+  const endMs = new Date(active.endsAtIso).getTime();
+  if (!Number.isFinite(endMs) || now.getTime() < endMs) return 0;
+
+  const finished = focusRepo.completeActive(now);
+  if (!finished) return 0;
+
+  const stats = focusRepo.getTodayStats(now);
+  const body =
+    `Sesi fokus *${finished.label}* (${finished.durationMinutes} menit) selesai!\n` +
+    `Saatnya istirahat sebentar 5 menit.\n` +
+    `📊 Total fokus hari ini: *${stats.todaySessions} sesi (${stats.todayMinutes} menit)*.`;
+
+  await sendDualNotification('🍅 Sesi Fokus Selesai!', body, '/', {
+    recordForSnooze: false,
+    tag: `focus-done-${finished.id}`,
+  });
+  emitDataChange('focus', 'scheduler');
+  return 1;
+}
+
+/**
+ * Feature 6: Evening habit reminder at 21:00 WIB if active habits remain unchecked today.
+ */
+export async function checkEveningHabitReminder(now = new Date()) {
+  const parts = getWibParts(now);
+  if (parts.timeStr < '21:00' || parts.timeStr > '21:15') return 0;
+
+  const key = `habit_evening_notif:${parts.dateStr}`;
+  if (stateRepo.get(key)) return 0;
+
+  const data = habitRepo.getDashboardData(7, now);
+  const remaining = data.habits.filter((h) => !h.doneToday);
+  if (!remaining.length) return 0;
+
+  const lines = remaining.map((h) => `• ${h.nama} _(streak: ${h.streak} hari)_`).join('\n');
+  await sendDualNotification(
+    `🔥 Pengingat Habit Harian (${remaining.length} tersisa)`,
+    `Jangan putus streak hari ini! Habit yang belum diceklis:\n${lines}\n\n_Ketik \`/h <nama habit>\` untuk langsung centang._`,
+    '/',
+    { recordForSnooze: false, tag: key }
+  );
+  stateRepo.set(key, parts.dateTimeStr);
+  return 1;
 }
 
 /**
@@ -249,7 +348,7 @@ export async function runWeeklyBackup(now = new Date()) {
 }
 
 export async function runMinuteTick(now = new Date()) {
-  const [schedules, tasks, moments] = await Promise.all([
+  const [schedules, tasks, moments, reminders, focus, habits] = await Promise.all([
     checkSchedules(now).catch((err) => {
       console.error('[Scheduler] checkSchedules error:', err);
       return 0;
@@ -262,8 +361,20 @@ export async function runMinuteTick(now = new Date()) {
       console.error('[Scheduler] checkSpecialMoments error:', err);
       return 0;
     }),
+    checkQuickReminders(now).catch((err) => {
+      console.error('[Scheduler] checkQuickReminders error:', err);
+      return 0;
+    }),
+    checkFocusSessions(now).catch((err) => {
+      console.error('[Scheduler] checkFocusSessions error:', err);
+      return 0;
+    }),
+    checkEveningHabitReminder(now).catch((err) => {
+      console.error('[Scheduler] checkEveningHabitReminder error:', err);
+      return 0;
+    }),
   ]);
-  return { schedules, tasks, moments };
+  return { schedules, tasks, moments, reminders, focus, habits };
 }
 
 function scheduleDynamicJobs() {
