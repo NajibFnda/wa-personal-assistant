@@ -700,9 +700,9 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
     }
   }
 
-  // 9. Simple Expense List ("Makan siang 18rb, bensin 25rb, kopi 20k")
+  // 9. Simple Expense List ("Makan siang 18rb, bensin 25rb, kopi 20k", "beli nasi goreng 15000")
   if (
-    !/\b(jam|pukul|besok|lusa|senin|selasa|rabu|kamis|jumat|sabtu|minggu|tugas|jadwal|ingetin|pacar|dia|pemasukan|income|masuk|dapat|dapet|terima|diterima|gaji|beasiswa|uang\s+saku|kiriman|transfer\s+ortu|bonus|thr|cashback)\b/i.test(
+    !/\b(jam|pukul|besok|lusa|senin|selasa|rabu|kamis|jum'?at|sabtu|minggu|ahad|tugas|jadwal|ingetin|ingatkan|pacar\w*|doi|dia|lahir|ultah|ulang\s+tahun|anniv\w*|jadian|momen|wishlist|tanggal|tgl|tahun|januari|februari|maret|april|mei|juni|juli|agustus|september|oktober|november|desember|pemasukan|income|masuk|dapat|dapet|terima|diterima|gaji|beasiswa|uang\s+saku|kiriman|transfer\s+ortu|bonus|thr|cashback)\b/i.test(
       clean
     )
   ) {
@@ -715,20 +715,27 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
       let allMatched = true;
       for (const seg of segments) {
         const m = seg.match(
-          /^(?:beli|bayar|jajan)?\s*([a-zA-Z0-9\s&()\-/]{2,40}?)\s+(\d+(?:[.,]\d+)?)\s*(rb|ribu|k|jt|juta)?$/i
+          /^(?:(beli|bayar|jajan|keluar|pengeluaran)\s+)?([a-zA-Z0-9\s&()\-/]{2,40}?)\s+(?:(rp\.?)\s*)?(\d+(?:[.,]\d+)?)\s*(rb|ribu|k|jt|juta)?$/i
         );
         if (!m) {
           allMatched = false;
           break;
         }
-        const itemName = m[1].trim();
-        const rawNum = Number(m[2].replace(',', '.'));
-        const unit = (m[3] || '').toLowerCase();
+        const leadVerb = (m[1] || '').toLowerCase();
+        const itemName = m[2].trim();
+        const hasRp = Boolean(m[3]);
+        const rawNum = Number(m[4].replace(',', '.'));
+        const unit = (m[5] || '').toLowerCase();
         let mult = 1;
         if (unit === 'rb' || unit === 'ribu' || unit === 'k') mult = 1000;
         else if (unit === 'jt' || unit === 'juta') mult = 1000000;
         const nominal = Math.round(rawNum * mult);
-        if (!itemName || nominal < 500) {
+
+        // Guard against years (e.g. "2003", "2026") or random IDs without currency/unit
+        const looksLikeYear = !unit && !hasRp && !leadVerb && rawNum >= 1900 && rawNum <= 2100;
+        const oddBareNumber = !unit && !hasRp && nominal % 100 !== 0;
+
+        if (!itemName || nominal < 500 || looksLikeYear || oddBareNumber) {
           allMatched = false;
           break;
         }
@@ -1196,7 +1203,7 @@ ATURAN KLASIFIKASI INTENT:
      - Jika menunjuk satu hari spesifik, isi payload.tanggal.
      - Jika menunjuk rentang (misal "minggu lalu", "bulan ini"), isi payload.tanggal_mulai dan payload.tanggal_akhir.
      - Jika mencari topik/kata spesifik ("matcha", "sakit", "kafe"), isi payload.kata_kunci.
-8. TAMBAH_WISHLIST_MOMEN: Pengguna menyimpan keinginan/wishlist pacar ("Masukin wishlist dia: tas selempang warna krem", atau dari screenshot barang) ATAU menyimpan tanggal penting/spesial ("Ulang tahun dia 14 Mei", "Anniversary kita 17 Agustus 2024", "Ingetin tanggal jadian 24 tiap bulan").
+8. TAMBAH_WISHLIST_MOMEN: Pengguna menyimpan keinginan/wishlist pacar ("Masukin wishlist dia: tas selempang warna krem", atau dari screenshot barang) ATAU menyimpan tanggal penting/spesial/tanggal lahir ("pacarku lahir 12 desember 2003", "Ulang tahun dia 14 Mei", "Anniversary kita 17 Agustus 2024", "Ingetin tanggal jadian 24 tiap bulan").
    - Set tipe_item = "WISHLIST" untuk barang/keinginan, atau "MOMEN" untuk tanggal spesial (isi tanggal YYYY-MM-DD).
    - Untuk MOMEN: set payload.ulang = "BULANAN" jika disebut tiap bulan/bulanan/mensiversary, "SEKALI" jika sekali saja, atau "TAHUNAN" secara default.
    - Isi judul dan isi_catatan (jika ada detail tambahan).
