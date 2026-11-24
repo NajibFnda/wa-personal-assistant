@@ -550,21 +550,53 @@
         </div>
 
         <div class="two-col-grid">
-          <div class="glass-card">
-            <div class="card-header">
-              <div class="card-title-group">
-                <span class="title-icon"><i data-lucide="pie-chart" class="icon-18"></i></span>
-                <h3>Distribusi Kategori</h3>
+          <div class="glass-card report-card">
+            <div class="report-period-seg" role="tablist" aria-label="Periode Laporan Keuangan">
+              <button class="report-period-btn active" data-report-period="this_month" type="button">Bulan ini</button>
+              <button class="report-period-btn" data-report-period="last_month" type="button">Bulan Lalu</button>
+              <button class="report-period-btn" data-report-period="three_months" type="button">3 Bulan</button>
+            </div>
+
+            <div class="report-hero-balance">
+              <span class="report-hero-label">Selisih</span>
+              <div class="report-hero-value mono" id="report-balance">Rp 0</div>
+            </div>
+
+            <div class="report-split-row">
+              <div class="report-split-col">
+                <span class="report-split-label">
+                  <i data-lucide="arrow-down" class="icon-14"></i>
+                  <span>Pemasukan</span>
+                </span>
+                <div class="report-split-value mono is-income" id="report-income">Rp 0</div>
               </div>
-              <div class="filter-bar compact-filter">
-                <button class="filter-pill active" data-chart-mode="PENGELUARAN" type="button">Keluar</button>
-                <button class="filter-pill" data-chart-mode="PEMASUKAN" type="button">Masuk</button>
+              <div class="report-split-divider" aria-hidden="true"></div>
+              <div class="report-split-col">
+                <span class="report-split-label">
+                  <i data-lucide="arrow-up" class="icon-14"></i>
+                  <span>Pengeluaran</span>
+                </span>
+                <div class="report-split-value mono is-expense" id="report-expense">-Rp 0</div>
               </div>
             </div>
-            <div class="chart-wrap">
-              <canvas id="expense-chart"></canvas>
+
+            <div class="report-ring-wrap">
+              <svg class="report-ring-svg" viewBox="0 0 180 180" aria-label="Rasio Pengeluaran">
+                <circle class="report-ring-track" cx="90" cy="90" r="72"></circle>
+                <circle id="report-ring-progress" class="report-ring-arc" cx="90" cy="90" r="72" stroke-dasharray="452.39" stroke-dashoffset="452.39"></circle>
+              </svg>
+              <div class="report-ring-center">
+                <div class="report-ring-pct mono" id="report-ring-pct">0<span class="pct-sign">%</span></div>
+                <div class="report-ring-sub" id="report-ring-label">Pengeluaran</div>
+              </div>
             </div>
-            <div id="expense-category-bars" class="category-bars"></div>
+
+            <div class="report-underline-tabs" role="tablist" aria-label="Kategori Pemasukan atau Pengeluaran">
+              <button class="report-utab active" data-chart-mode="PEMASUKAN" type="button">Pemasukan</button>
+              <button class="report-utab" data-chart-mode="PENGELUARAN" type="button">Pengeluaran</button>
+            </div>
+
+            <div id="expense-category-bars" class="report-cat-list"></div>
           </div>
 
           <div class="glass-card table-card">

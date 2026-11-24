@@ -5,7 +5,9 @@ const state = {
   tugasFilter: '0',
   vaultFilter: 'all',
   financeFilter: 'all',
-  financeChartMode: 'PENGELUARAN',
+  financeChartMode: 'PEMASUKAN',
+  financePeriod: 'this_month',
+  financePeriodLabel: '',
   jadwalList: [],
   tugasList: [],
   memoriList: [],
@@ -1526,12 +1528,97 @@ function renderVault() {
 }
 
 /* ==================== TAB 6: KEUANGAN ==================== */
+const BULAN_SHORT_ID = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+
+function formatDateRangeShort(startIso, endIso) {
+  const fmt = (iso) => {
+    const [y, m, d] = String(iso || '').split('-').map(Number);
+    if (!y || !m || !d) return iso || '-';
+    return `${d} ${BULAN_SHORT_ID[m - 1] || ''} ${y}`;
+  };
+  return `${fmt(startIso)} - ${fmt(endIso)}`;
+}
+
+function getMonthDateBounds(year, month1To12) {
+  const lastDay = new Date(year, month1To12, 0).getDate();
+  const mm = String(month1To12).padStart(2, '0');
+  const dd = String(lastDay).padStart(2, '0');
+  return {
+    monthStr: `${year}-${mm}`,
+    start: `${year}-${mm}-01`,
+    end: `${year}-${mm}-${dd}`,
+  };
+}
+
+function computeFinancePeriodQuery() {
+  const todayMonth = getCurrentMonthWibStr();
+  const [curY, curM] = todayMonth.split('-').map(Number);
+
+  if (state.financePeriod === 'last_month') {
+    const d = new Date(curY, curM - 2, 1);
+    const b = getMonthDateBounds(d.getFullYear(), d.getMonth() + 1);
+    return {
+      query: `month=${encodeURIComponent(b.monthStr)}`,
+      rangeLabel: formatDateRangeShort(b.start, b.end),
+      pickerMonth: b.monthStr,
+    };
+  }
+
+  if (state.financePeriod === 'three_months') {
+    const startD = new Date(curY, curM - 3, 1);
+    const startBounds = getMonthDateBounds(startD.getFullYear(), startD.getMonth() + 1);
+    const endBounds = getMonthDateBounds(curY, curM);
+    return {
+      query: `tanggal_mulai=${encodeURIComponent(startBounds.start)}&tanggal_akhir=${encodeURIComponent(endBounds.end)}`,
+      rangeLabel: formatDateRangeShort(startBounds.start, endBounds.end),
+      pickerMonth: endBounds.monthStr,
+    };
+  }
+
+  if (state.financePeriod === 'custom') {
+    const pickerVal = $('#expense-month-picker')?.value || todayMonth;
+    const [y, m] = pickerVal.split('-').map(Number);
+    const b = getMonthDateBounds(y || curY, m || curM);
+    return {
+      query: `month=${encodeURIComponent(b.monthStr)}`,
+      rangeLabel: formatDateRangeShort(b.start, b.end),
+      pickerMonth: b.monthStr,
+    };
+  }
+
+  // Default: this_month
+  const b = getMonthDateBounds(curY, curM);
+  return {
+    query: `month=${encodeURIComponent(b.monthStr)}`,
+    rangeLabel: formatDateRangeShort(b.start, b.end),
+    pickerMonth: b.monthStr,
+  };
+}
+
+function pickFinanceCategoryIcon(cat, isIncome) {
+  const map = {
+    'Uang Saku': 'wallet',
+    'Gaji & Freelance': 'briefcase',
+    Beasiswa: 'graduation-cap',
+    'Hadiah & Bonus': 'gift',
+    'Makan & Minum': 'utensils',
+    Transportasi: 'car',
+    Akademik: 'book-open',
+    Hiburan: 'sparkles',
+    Lainnya: isIncome ? 'arrow-down-left' : 'receipt',
+  };
+  return map[cat] || (isIncome ? 'arrow-down-left' : 'arrow-up-right');
+}
+
 async function loadPengeluaran() {
   try {
+    const periodInfo = computeFinancePeriodQuery();
     const picker = $('#expense-month-picker');
-    if (picker && !picker.value) picker.value = getCurrentMonthWibStr();
-    const month = picker?.value || getCurrentMonthWibStr();
-    state.expenseData = await api(`/api/pengeluaran?month=${encodeURIComponent(month)}`);
+    if (picker && periodInfo.pickerMonth && state.financePeriod !== 'custom') {
+      picker.value = periodInfo.pickerMonth;
+    }
+    state.financePeriodLabel = periodInfo.rangeLabel;
+    state.expenseData = await api(`/api/pengeluaran?${periodInfo.query}`);
     renderPengeluaran(state.expenseData);
   } catch (err) {
     toast(err.message, 'error');
@@ -1642,78 +1729,121 @@ function renderPengeluaran(data) {
 }
 
 function renderExpenseChart(data) {
+  const totalInc = Number(data.totalIncome) || 0;
+  const totalExp = Number(data.totalExpense ?? data.total) || 0;
+  const balance = Number(data.balance ?? totalInc - totalExp) || 0;
+
+  if ($('#report-balance')) $('#report-balance').textContent = formatSignedRupiah(balance);
+  if ($('#report-income')) $('#report-income').textContent = formatRupiah(totalInc);
+  if ($('#report-expense')) {
+    $('#report-expense').textContent = totalExp > 0 ? `-${formatRupiah(totalExp)}` : formatRupiah(0);
+  }
+
+  // Ring Gauge: Pengeluaran ratio against Pemasukan (matches reference: e.g. 67% Pengeluaran)
+  const rawPct = totalInc > 0 ? Math.round((totalExp / totalInc) * 100) : totalExp > 0 ? 100 : 0;
+  const clampedVisualPct = Math.max(0, Math.min(100, rawPct));
+  const circumference = 2 * Math.PI * 72; // r = 72 -> 452.39
+  const offset = circumference * (1 - clampedVisualPct / 100);
+
+  const ringEl = $('#report-ring-progress');
+  if (ringEl) {
+    ringEl.style.strokeDasharray = circumference.toFixed(2);
+    ringEl.style.strokeDashoffset = offset.toFixed(2);
+  }
+  const pctEl = $('#report-ring-pct');
+  if (pctEl) {
+    pctEl.innerHTML = `${rawPct}<span class="pct-sign">%</span>`;
+  }
+  const labelEl = $('#report-ring-label');
+  if (labelEl) {
+    labelEl.textContent = 'Pengeluaran';
+  }
+
+  // Bottom category progress rows (Pemasukan / Pengeluaran underline tabs)
   const isIncomeMode = state.financeChartMode === 'PEMASUKAN';
   const sourceMap = isIncomeMode ? data.incomeByCategory || {} : data.byCategory || {};
-  const entries = Object.entries(sourceMap);
-  const total = isIncomeMode ? Number(data.totalIncome) || 0 : Number(data.totalExpense ?? data.total) || 0;
+  const modeTotal = isIncomeMode ? totalInc : totalExp;
+  const rangeLabel = state.financePeriodLabel || data.selectedMonth || '-';
 
-  const isLight = getCurrentTheme() === 'light';
-  const catColors = getCategoryColors();
+  const nonZeroEntries = Object.entries(sourceMap)
+    .filter(([, val]) => Number(val) > 0)
+    .sort((a, b) => b[1] - a[1]);
+
   const barsWrap = $('#expense-category-bars');
-  barsWrap.innerHTML = entries
-    .map(([cat, val]) => {
-      const pct = total > 0 ? Math.round((val / total) * 100) : 0;
-      const color = catColors[cat] || (isLight ? '#3f3f46' : '#d4d4d8');
-      return `
-      <div class="cat-bar-row">
-        <div class="cat-bar-head">
-          <span>${escapeHtml(cat)}</span>
-          <span class="mono">${formatRupiah(val)} (${pct}%)</span>
+  if (!barsWrap) return;
+
+  if (modeTotal <= 0 || !nonZeroEntries.length) {
+    barsWrap.innerHTML = `
+      <div class="report-cat-row">
+        <span class="report-cat-icon">
+          <i data-lucide="${isIncomeMode ? 'arrow-down-left' : 'arrow-up-right'}" class="icon-18"></i>
+        </span>
+        <div class="report-cat-main">
+          <div class="report-cat-top">
+            <span class="report-cat-name">${isIncomeMode ? 'Uang Masuk' : 'Uang Keluar'}</span>
+            <span class="report-cat-amt mono">Rp 0</span>
+          </div>
+          <div class="report-cat-bar-track">
+            <div class="report-cat-bar-fill" style="width:0%;"></div>
+          </div>
+          <div class="report-cat-meta">
+            <span>${escapeHtml(rangeLabel)}</span>
+            <span class="mono">0%</span>
+          </div>
         </div>
-        <div class="cat-bar-track">
-          <div class="cat-bar-fill" style="width:${pct}%;background:${color};"></div>
+      </div>`;
+    renderIcons();
+    return;
+  }
+
+  const summaryRow = `
+    <div class="report-cat-row">
+      <span class="report-cat-icon">
+        <i data-lucide="${isIncomeMode ? 'arrow-down-left' : 'arrow-up-right'}" class="icon-18"></i>
+      </span>
+      <div class="report-cat-main">
+        <div class="report-cat-top">
+          <span class="report-cat-name">${isIncomeMode ? 'Total Uang Masuk' : 'Total Uang Keluar'}</span>
+          <span class="report-cat-amt mono">${formatRupiah(modeTotal)}</span>
+        </div>
+        <div class="report-cat-bar-track">
+          <div class="report-cat-bar-fill" style="width:100%;"></div>
+        </div>
+        <div class="report-cat-meta">
+          <span>${escapeHtml(rangeLabel)}</span>
+          <span class="mono">100%</span>
+        </div>
+      </div>
+    </div>`;
+
+  const catRows = nonZeroEntries
+    .map(([cat, val]) => {
+      const pct = modeTotal > 0 ? Math.round((val / modeTotal) * 100) : 0;
+      const iconName = pickFinanceCategoryIcon(cat, isIncomeMode);
+      return `
+      <div class="report-cat-row">
+        <span class="report-cat-icon">
+          <i data-lucide="${iconName}" class="icon-18"></i>
+        </span>
+        <div class="report-cat-main">
+          <div class="report-cat-top">
+            <span class="report-cat-name">${escapeHtml(cat)}</span>
+            <span class="report-cat-amt mono">${formatRupiah(val)}</span>
+          </div>
+          <div class="report-cat-bar-track">
+            <div class="report-cat-bar-fill" style="width:${pct}%;"></div>
+          </div>
+          <div class="report-cat-meta">
+            <span>${escapeHtml(rangeLabel)}</span>
+            <span class="mono">${pct}%</span>
+          </div>
         </div>
       </div>`;
     })
     .join('');
 
-  const canvas = $('#expense-chart');
-  if (!canvas || typeof window.Chart === 'undefined') return;
-
-  if (state.expenseChart) {
-    state.expenseChart.destroy();
-    state.expenseChart = null;
-  }
-
-  const nonZero = entries.filter(([, v]) => v > 0);
-  const labels = nonZero.length ? nonZero.map(([k]) => k) : ['Belum ada data'];
-  const values = nonZero.length ? nonZero.map(([, v]) => v) : [1];
-  const colors = nonZero.length
-    ? nonZero.map(([k]) => catColors[k] || (isLight ? '#3f3f46' : '#d4d4d8'))
-    : [isLight ? 'rgba(9, 9, 11, 0.12)' : 'rgba(255, 255, 255, 0.16)'];
-
-  state.expenseChart = new window.Chart(canvas, {
-    type: 'doughnut',
-    data: {
-      labels,
-      datasets: [
-        {
-          data: values,
-          backgroundColor: colors,
-          borderColor: isLight ? 'rgba(9, 9, 11, 0.08)' : 'rgba(255, 255, 255, 0.12)',
-          borderWidth: 1,
-          hoverOffset: 6,
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      cutout: '68%',
-      plugins: {
-        legend: {
-          position: 'bottom',
-          labels: { color: isLight ? 'rgba(9, 9, 11, 0.80)' : 'rgba(255, 255, 255, 0.85)', boxWidth: 11, padding: 14 },
-        },
-        tooltip: {
-          callbacks: {
-            label: (ctx) =>
-              nonZero.length ? ` ${ctx.label}: ${formatRupiah(ctx.parsed)}` : ' Belum ada transaksi',
-          },
-        },
-      },
-    },
-  });
+  barsWrap.innerHTML = summaryRow + catRows;
+  renderIcons();
 }
 
 /* ==================== FORM & ACTION BINDINGS ==================== */
@@ -2085,8 +2215,21 @@ function bindFormsAndActions() {
     }
   });
 
-  // Finance modal, filters & month picker
-  $('#expense-month-picker')?.addEventListener('change', loadPengeluaran);
+  // Finance modal, period tabs, filters & month picker
+  $('#expense-month-picker')?.addEventListener('change', () => {
+    state.financePeriod = 'custom';
+    $$('[data-report-period]').forEach((b) => b.classList.remove('active'));
+    loadPengeluaran();
+  });
+
+  $$('[data-report-period]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      $$('[data-report-period]').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.financePeriod = btn.dataset.reportPeriod || 'this_month';
+      loadPengeluaran();
+    });
+  });
 
   $$('[data-fin-filter]').forEach((btn) => {
     btn.addEventListener('click', () => {

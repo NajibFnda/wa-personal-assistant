@@ -1571,6 +1571,259 @@ input[type='file'] {
 .amount-income { color: #ffffff; }
 .amount-expense { color: rgba(255, 255, 255, 0.72); }
 
+/* ==================== FINANCE REPORT RING CARD ==================== */
+.report-card {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.report-period-seg {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+}
+
+.report-period-btn {
+  padding: 10px 8px;
+  border: none;
+  border-right: 1px solid rgba(255, 255, 255, 0.14);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 0.84rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+.report-period-btn:last-child { border-right: none; }
+.report-period-btn:hover { color: #ffffff; background: rgba(255, 255, 255, 0.06); }
+.report-period-btn.active {
+  background: #ffffff;
+  color: #09090b;
+}
+
+.report-hero-balance {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 4px;
+  padding: 6px 0 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+}
+.report-hero-label {
+  font-size: 0.84rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.report-hero-value {
+  font-size: 1.72rem;
+  font-weight: 750;
+  letter-spacing: -0.03em;
+  color: var(--text-primary);
+}
+
+.report-split-row {
+  display: grid;
+  grid-template-columns: 1fr 1px 1fr;
+  align-items: center;
+  gap: 12px;
+  padding: 2px 0 6px;
+}
+.report-split-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 6px;
+}
+.report-split-divider {
+  width: 1px;
+  height: 44px;
+  background: rgba(255, 255, 255, 0.12);
+}
+.report-split-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.report-split-value {
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.report-split-value.is-income { color: #ffffff; }
+.report-split-value.is-expense { color: rgba(255, 255, 255, 0.72); }
+
+.report-ring-wrap {
+  position: relative;
+  width: 184px;
+  height: 184px;
+  margin: 4px auto;
+  display: grid;
+  place-items: center;
+}
+.report-ring-svg {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+.report-ring-track {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.12);
+  stroke-width: 15;
+}
+.report-ring-arc {
+  fill: none;
+  stroke: #ffffff;
+  stroke-width: 15;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.report-ring-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  pointer-events: none;
+}
+.report-ring-pct {
+  font-size: 1.85rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  color: #ffffff;
+}
+.report-ring-pct .pct-sign {
+  font-size: 0.95rem;
+  font-weight: 700;
+  vertical-align: super;
+  margin-left: 1px;
+}
+.report-ring-sub {
+  margin-top: 4px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.report-underline-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+.report-utab {
+  position: relative;
+  padding: 10px 8px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 0.9rem;
+  font-weight: 650;
+  cursor: pointer;
+  transition: color 0.18s ease;
+}
+.report-utab:hover { color: #ffffff; }
+.report-utab.active { color: #ffffff; }
+.report-utab.active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2.5px;
+  border-radius: 999px;
+  background: #ffffff;
+}
+
+.report-cat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.report-cat-row {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+.report-cat-row:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.16);
+}
+.report-cat-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.10);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  display: inline-grid;
+  place-items: center;
+  color: #ffffff;
+  flex-shrink: 0;
+}
+.report-cat-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.report-cat-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+.report-cat-name {
+  font-size: 0.9rem;
+  font-weight: 650;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.report-cat-amt {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.report-cat-bar-track {
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.10);
+  overflow: hidden;
+}
+.report-cat-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: #ffffff;
+  transition: width 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.report-cat-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+}
+
 /* Empty States */
 .empty-state {
   display: flex;
@@ -2343,6 +2596,49 @@ html[data-theme='light'] .fin-dir-badge.is-expense {
 }
 html[data-theme='light'] .amount-income { color: #09090b; }
 html[data-theme='light'] .amount-expense { color: rgba(9, 9, 11, 0.62); }
+
+html[data-theme='light'] .report-period-seg {
+  border-color: rgba(9, 9, 11, 0.16);
+  background: rgba(255, 255, 255, 0.72);
+}
+html[data-theme='light'] .report-period-btn {
+  border-right-color: rgba(9, 9, 11, 0.12);
+  color: rgba(9, 9, 11, 0.68);
+}
+html[data-theme='light'] .report-period-btn:hover {
+  color: #09090b;
+  background: rgba(9, 9, 11, 0.04);
+}
+html[data-theme='light'] .report-period-btn.active {
+  background: #09090b;
+  color: #ffffff;
+}
+html[data-theme='light'] .report-hero-balance { border-bottom-color: rgba(9, 9, 11, 0.09); }
+html[data-theme='light'] .report-split-divider { background: rgba(9, 9, 11, 0.10); }
+html[data-theme='light'] .report-split-value.is-income { color: #09090b; }
+html[data-theme='light'] .report-split-value.is-expense { color: rgba(9, 9, 11, 0.62); }
+html[data-theme='light'] .report-ring-track { stroke: rgba(9, 9, 11, 0.09); }
+html[data-theme='light'] .report-ring-arc { stroke: #09090b; }
+html[data-theme='light'] .report-ring-pct { color: #09090b; }
+html[data-theme='light'] .report-underline-tabs { border-bottom-color: rgba(9, 9, 11, 0.10); }
+html[data-theme='light'] .report-utab:hover,
+html[data-theme='light'] .report-utab.active { color: #09090b; }
+html[data-theme='light'] .report-utab.active::after { background: #09090b; }
+html[data-theme='light'] .report-cat-row {
+  background: rgba(9, 9, 11, 0.03);
+  border-color: rgba(9, 9, 11, 0.08);
+}
+html[data-theme='light'] .report-cat-row:hover {
+  background: rgba(9, 9, 11, 0.055);
+  border-color: rgba(9, 9, 11, 0.14);
+}
+html[data-theme='light'] .report-cat-icon {
+  background: rgba(9, 9, 11, 0.07);
+  border-color: rgba(9, 9, 11, 0.12);
+  color: #09090b;
+}
+html[data-theme='light'] .report-cat-bar-track { background: rgba(9, 9, 11, 0.09); }
+html[data-theme='light'] .report-cat-bar-fill { background: #09090b; }
 
 html[data-theme='light'] .notif-chip {
   border-color: rgba(9, 9, 11, 0.14);
