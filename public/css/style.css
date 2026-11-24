@@ -1568,8 +1568,9 @@ input[type='file'] {
   background: rgba(255, 255, 255, 0.08);
   color: rgba(255, 255, 255, 0.8);
 }
-.amount-income { color: #ffffff; }
-.amount-expense { color: rgba(255, 255, 255, 0.72); }
+.amount-income { color: #ffffff; white-space: nowrap; }
+.amount-expense { color: rgba(255, 255, 255, 0.72); white-space: nowrap; }
+.data-table td.mono { white-space: nowrap; }
 
 /* ==================== FINANCE REPORT RING CARD ==================== */
 .report-card {

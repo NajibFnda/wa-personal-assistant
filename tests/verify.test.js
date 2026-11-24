@@ -594,12 +594,22 @@ describe('All-in-One Personal Assistant End-to-End Verification (Isolated Test D
     assert.match(rkRes.text, /Pemasukan/);
     assert.match(rkRes.text, /Saldo Bersih/);
 
-    // Verify natural Indonesian fast-path for Pemasukan
+    // Verify natural Indonesian fast-path for Pemasukan (including bare "masuk 20k" & "masuk 20k dari ortu")
     const { tryLocalFastIntent: tryFastIncome } = await import('../src/services/gemini.js');
     const natInc = tryFastIncome({ text: 'dapat uang saku 350rb', hasMedia: false, now });
     assert.equal(natInc?.intent, 'CATAT_PEMASUKAN');
     assert.equal(natInc?.payload?.expenses?.[0]?.nominal, 350000);
     assert.equal(natInc?.payload?.expenses?.[0]?.kategori, 'Uang Saku');
+
+    const bareInc = tryFastIncome({ text: 'masuk 20k', hasMedia: false, now });
+    assert.equal(bareInc?.intent, 'CATAT_PEMASUKAN');
+    assert.equal(bareInc?.payload?.expenses?.[0]?.nominal, 20000);
+    assert.equal(bareInc?.payload?.expenses?.[0]?.item, 'Uang Masuk');
+
+    const numFirstInc = tryFastIncome({ text: 'masuk 50rb dari ortu', hasMedia: false, now });
+    assert.equal(numFirstInc?.intent, 'CATAT_PEMASUKAN');
+    assert.equal(numFirstInc?.payload?.expenses?.[0]?.nominal, 50000);
+    assert.equal(numFirstInc?.payload?.expenses?.[0]?.kategori, 'Uang Saku');
 
     // Unknown command
     const unk = await handleSlashCommand({ text: '/ngasal', now });

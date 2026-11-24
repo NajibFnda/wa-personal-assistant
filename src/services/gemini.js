@@ -576,14 +576,23 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
     };
   }
 
-  // 8B. Simple Income List ("pemasukan uang saku 500rb", "dapat transfer ortu 1jt", "terima gaji freelance 2jt")
+  // 8B. Simple Income List ("masuk 20k", "pemasukan 50rb", "pemasukan uang saku 500rb", "masuk 20k dari ortu", "dapat transfer ortu 1jt")
   const incomeLeadMatch = clean.match(
-    /^(?:catat\s+)?(?:pemasukan|income|masuk(?:\s+duit|\s+uang)?|dapat|dapet|terima|diterima)\s+(.+)$/i
+    /^(?:catat\s+)?(?:pemasukan|income|(?:uang|duit)\s+masuk|masuk(?:\s+duit|\s+uang)?|dapat|dapet|terima|diterima)\s+(.+)$/i
   );
   if (
     incomeLeadMatch &&
     !/\b(jam|pukul|besok|lusa|senin|selasa|rabu|kamis|jumat|sabtu|minggu|tugas|jadwal|ingetin|pacar|dia)\b/i.test(clean)
   ) {
+    const parseNominal = (numStr, unitStr) => {
+      const rawNum = Number(String(numStr).replace(',', '.'));
+      const unit = String(unitStr || '').toLowerCase();
+      let mult = 1;
+      if (unit === 'rb' || unit === 'ribu' || unit === 'k') mult = 1000;
+      else if (unit === 'jt' || unit === 'juta') mult = 1000000;
+      return Math.round(rawNum * mult);
+    };
+
     const segments = incomeLeadMatch[1]
       .split(/[,;\n]+/)
       .map((s) => s.trim())
@@ -591,18 +600,30 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
     const incomes = [];
     let allMatched = segments.length >= 1 && segments.length <= 10;
     for (const seg of segments) {
-      const m = seg.match(/^([a-zA-Z0-9\s&()\-/]{2,45}?)\s+(\d+(?:[.,]\d+)?)\s*(rb|ribu|k|jt|juta)?$/i);
-      if (!m) {
+      let itemName = '';
+      let nominal = 0;
+
+      // Pattern A: bare nominal only ("masuk 20k", "pemasukan 50rb")
+      const bareNum = seg.match(/^(\d+(?:[.,]\d+)?)\s*(rb|ribu|k|jt|juta)?$/i);
+      // Pattern B: nominal first then optional label ("masuk 20k dari ortu", "pemasukan 500rb uang saku")
+      const numFirst = seg.match(/^(\d+(?:[.,]\d+)?)\s*(rb|ribu|k|jt|juta)?\s+(?:dari\s+|untuk\s+|buat\s+)?([a-zA-Z0-9\s&()\-/]{2,45})$/i);
+      // Pattern C: label first then nominal ("uang saku 500rb", "gaji freelance 1.5jt")
+      const labelFirst = seg.match(/^(?:dari\s+)?([a-zA-Z0-9\s&()\-/]{2,45}?)\s+(\d+(?:[.,]\d+)?)\s*(rb|ribu|k|jt|juta)?$/i);
+
+      if (bareNum) {
+        itemName = 'Uang Masuk';
+        nominal = parseNominal(bareNum[1], bareNum[2]);
+      } else if (numFirst) {
+        itemName = numFirst[3].trim();
+        nominal = parseNominal(numFirst[1], numFirst[2]);
+      } else if (labelFirst) {
+        itemName = labelFirst[1].trim();
+        nominal = parseNominal(labelFirst[2], labelFirst[3]);
+      } else {
         allMatched = false;
         break;
       }
-      const itemName = m[1].trim();
-      const rawNum = Number(m[2].replace(',', '.'));
-      const unit = (m[3] || '').toLowerCase();
-      let mult = 1;
-      if (unit === 'rb' || unit === 'ribu' || unit === 'k') mult = 1000;
-      else if (unit === 'jt' || unit === 'juta') mult = 1000000;
-      const nominal = Math.round(rawNum * mult);
+
       if (!itemName || nominal < 500) {
         allMatched = false;
         break;
@@ -627,7 +648,7 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
 
   // 9. Simple Expense List ("Makan siang 18rb, bensin 25rb, kopi 20k")
   if (
-    !/\b(jam|pukul|besok|lusa|senin|selasa|rabu|kamis|jumat|sabtu|minggu|tugas|jadwal|ingetin|pacar|dia|pemasukan|income|gaji|beasiswa|uang\s+saku|kiriman|transfer\s+ortu|bonus|thr|cashback)\b/i.test(
+    !/\b(jam|pukul|besok|lusa|senin|selasa|rabu|kamis|jumat|sabtu|minggu|tugas|jadwal|ingetin|pacar|dia|pemasukan|income|masuk|dapat|dapet|terima|diterima|gaji|beasiswa|uang\s+saku|kiriman|transfer\s+ortu|bonus|thr|cashback)\b/i.test(
       clean
     )
   ) {
