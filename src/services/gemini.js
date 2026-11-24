@@ -1327,13 +1327,26 @@ export async function synthesizeMemoryAnswer(userQuestion, memories, now = new D
     )
     .join('\n');
 
-  const prompt = `Hari ini: ${nowParts.display}.\nPertanyaan pengguna: "${userQuestion}"\n\nData memori dari database:\n${formattedRows}\n\nSusun jawaban singkat, hangat, dan akurat dalam bahasa Indonesia hanya berdasarkan data memori di atas. Sertakan hari & tanggalnya dengan jelas.`;
+  const prompt = `Hari ini: ${nowParts.display}.
+Pertanyaan pengguna: "${userQuestion}"
+
+Data catatan aktivitas PACAR pengguna (dari Brankas Memori):
+${formattedRows}
+
+ATURAN JAWABAN:
+- Seluruh data di atas adalah catatan aktivitas/cerita PACAR pengguna (gunakan kata ganti "dia" atau "pacarmu"), BUKAN aktivitas pengguna sendiri.
+- JANGAN pernah menyebut "Anda telah..." atau mengira itu aktivitas pengguna.
+- Sapa pengguna secara santai dengan "kamu" (jangan kaku dengan "Anda").
+- Jawab singkat, hangat, dan akurat hanya berdasarkan data di atas, serta sertakan hari & tanggalnya dengan jelas.`;
+
+  const sysMsg =
+    'Kamu adalah asisten pribadi yang hangat, santai, dan akurat dalam bahasa Indonesia. Semua catatan dari Brankas Memori adalah tentang PACAR pengguna ("dia" / "pacarmu"), bukan tentang pengguna sendiri.';
 
   if (isGroqConfigured()) {
     try {
       const answer = await callGroqChat({
         messages: [
-          { role: 'system', content: 'Kamu adalah asisten pribadi yang hangat, ringkas, dan akurat dalam bahasa Indonesia.' },
+          { role: 'system', content: sysMsg },
           { role: 'user', content: prompt },
         ],
         chain: GROQ_TEXT_CHAIN,
@@ -1349,7 +1362,7 @@ export async function synthesizeMemoryAnswer(userQuestion, memories, now = new D
 
   const client = getClient();
   if (!client) {
-    return `Berikut catatan memori yang ditemukan:\n${formattedRows}`;
+    return `Berikut catatan memori pacarmu yang ditemukan:\n${formattedRows}`;
   }
 
   try {
@@ -1357,11 +1370,12 @@ export async function synthesizeMemoryAnswer(userQuestion, memories, now = new D
       model,
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
+        systemInstruction: sysMsg,
         temperature: 0.3,
       },
     }));
-    return (response.text || '').trim() || `Berikut catatan memori yang ditemukan:\n${formattedRows}`;
+    return (response.text || '').trim() || `Berikut catatan memori pacarmu yang ditemukan:\n${formattedRows}`;
   } catch {
-    return `Berikut catatan memori yang ditemukan:\n${formattedRows}`;
+    return `Berikut catatan memori pacarmu yang ditemukan:\n${formattedRows}`;
   }
 }
