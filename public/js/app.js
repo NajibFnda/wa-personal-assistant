@@ -22,7 +22,7 @@ const state = {
   pushSubscribed: false,
 };
 
-const CATEGORY_COLORS = {
+const CATEGORY_COLORS_DARK = {
   'Makan & Minum': '#ffffff',
   Transportasi: '#d4d4d8',
   Akademik: '#a1a1aa',
@@ -33,6 +33,58 @@ const CATEGORY_COLORS = {
   'Hadiah & Bonus': '#71717a',
   Lainnya: '#3f3f46',
 };
+
+const CATEGORY_COLORS_LIGHT = {
+  'Makan & Minum': '#09090b',
+  Transportasi: '#3f3f46',
+  Akademik: '#71717a',
+  Hiburan: '#a1a1aa',
+  'Uang Saku': '#09090b',
+  'Gaji & Freelance': '#3f3f46',
+  Beasiswa: '#71717a',
+  'Hadiah & Bonus': '#a1a1aa',
+  Lainnya: '#d4d4d8',
+};
+
+function getCurrentTheme() {
+  return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+}
+
+function getCategoryColors() {
+  return getCurrentTheme() === 'light' ? CATEGORY_COLORS_LIGHT : CATEGORY_COLORS_DARK;
+}
+
+function applyTheme(theme, persist = true) {
+  const next = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  const meta = $('#meta-theme-color');
+  if (meta) meta.setAttribute('content', next === 'light' ? '#f2f2f5' : '#060608');
+  if (persist) {
+    try {
+      localStorage.setItem('assistant_theme', next);
+    } catch {
+      // ignore storage errors
+    }
+  }
+  const btn = $('#btn-toggle-theme');
+  if (btn) {
+    const isLight = next === 'light';
+    btn.title = isLight ? 'Ubah ke Mode Gelap' : 'Ubah ke Mode Terang';
+    btn.setAttribute('aria-label', btn.title);
+    btn.innerHTML = `<i data-lucide="${isLight ? 'moon' : 'sun'}" class="icon-15"></i>`;
+    renderIcons();
+  }
+  if (state.expenseData) {
+    renderExpenseChart(state.expenseData);
+  }
+}
+
+function initThemeToggle() {
+  applyTheme(getCurrentTheme(), false);
+  $('#btn-toggle-theme')?.addEventListener('click', () => {
+    applyTheme(getCurrentTheme() === 'light' ? 'dark' : 'light', true);
+  });
+}
 
 const EXPENSE_CATEGORIES = ['Makan & Minum', 'Transportasi', 'Akademik', 'Hiburan', 'Lainnya'];
 const INCOME_CATEGORIES = ['Uang Saku', 'Gaji & Freelance', 'Beasiswa', 'Hadiah & Bonus', 'Lainnya'];
@@ -1595,11 +1647,13 @@ function renderExpenseChart(data) {
   const entries = Object.entries(sourceMap);
   const total = isIncomeMode ? Number(data.totalIncome) || 0 : Number(data.totalExpense ?? data.total) || 0;
 
+  const isLight = getCurrentTheme() === 'light';
+  const catColors = getCategoryColors();
   const barsWrap = $('#expense-category-bars');
   barsWrap.innerHTML = entries
     .map(([cat, val]) => {
       const pct = total > 0 ? Math.round((val / total) * 100) : 0;
-      const color = CATEGORY_COLORS[cat] || '#d4d4d8';
+      const color = catColors[cat] || (isLight ? '#3f3f46' : '#d4d4d8');
       return `
       <div class="cat-bar-row">
         <div class="cat-bar-head">
@@ -1625,8 +1679,8 @@ function renderExpenseChart(data) {
   const labels = nonZero.length ? nonZero.map(([k]) => k) : ['Belum ada data'];
   const values = nonZero.length ? nonZero.map(([, v]) => v) : [1];
   const colors = nonZero.length
-    ? nonZero.map(([k]) => CATEGORY_COLORS[k] || '#d4d4d8')
-    : ['rgba(255, 255, 255, 0.16)'];
+    ? nonZero.map(([k]) => catColors[k] || (isLight ? '#3f3f46' : '#d4d4d8'))
+    : [isLight ? 'rgba(9, 9, 11, 0.12)' : 'rgba(255, 255, 255, 0.16)'];
 
   state.expenseChart = new window.Chart(canvas, {
     type: 'doughnut',
@@ -1636,7 +1690,7 @@ function renderExpenseChart(data) {
         {
           data: values,
           backgroundColor: colors,
-          borderColor: 'rgba(255, 255, 255, 0.12)',
+          borderColor: isLight ? 'rgba(9, 9, 11, 0.08)' : 'rgba(255, 255, 255, 0.12)',
           borderWidth: 1,
           hoverOffset: 6,
         },
@@ -1649,7 +1703,7 @@ function renderExpenseChart(data) {
       plugins: {
         legend: {
           position: 'bottom',
-          labels: { color: 'rgba(255, 255, 255, 0.85)', boxWidth: 11, padding: 14 },
+          labels: { color: isLight ? 'rgba(9, 9, 11, 0.80)' : 'rgba(255, 255, 255, 0.85)', boxWidth: 11, padding: 14 },
         },
         tooltip: {
           callbacks: {
@@ -2185,6 +2239,7 @@ async function bootDashboard() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  initThemeToggle();
   renderIcons();
   startClock();
   bindNavigation();

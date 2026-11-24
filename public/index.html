@@ -3,7 +3,17 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <meta name="theme-color" content="#060608" />
+  <meta name="theme-color" id="meta-theme-color" content="#060608" />
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('assistant_theme') === 'light' ? 'light' : 'dark';
+        document.documentElement.dataset.theme = t;
+        var m = document.getElementById('meta-theme-color');
+        if (m) m.setAttribute('content', t === 'light' ? '#f2f2f5' : '#060608');
+      } catch (e) {}
+    })();
+  </script>
   <meta name="description" content="All-in-One Personal Assistant — WhatsApp Multimodal Bot + Gemini AI + Web Dashboard" />
   <title>Personal Assistant</title>
   <link rel="manifest" href="/manifest.json" />
@@ -62,6 +72,9 @@
         <div class="island-divider" aria-hidden="true"></div>
 
         <div class="island-actions">
+          <button id="btn-toggle-theme" class="island-icon-btn icon-only" type="button" title="Ubah ke Mode Terang" aria-label="Ubah Tema Gelap atau Terang">
+            <i data-lucide="sun" class="icon-15"></i>
+          </button>
           <button id="btn-enable-push" class="island-icon-btn" type="button" title="Aktifkan Notifikasi Browser" aria-label="Aktifkan Notifikasi Browser">
             <i data-lucide="bell" class="icon-15"></i>
             <span id="island-push-label" class="island-action-text">Aktifkan Notifikasi</span>
