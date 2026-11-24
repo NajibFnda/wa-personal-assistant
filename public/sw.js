@@ -1,4 +1,4 @@
-const CACHE_NAME = 'personal-assistant-v12';
+const CACHE_NAME = 'personal-assistant-v13';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
