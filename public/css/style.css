@@ -1825,6 +1825,86 @@ input[type='file'] {
   color: var(--text-secondary);
 }
 
+/* ==================== SECURITY AUDIT LOG MODAL ==================== */
+.audit-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+.audit-stat-box {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.audit-stat-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+.audit-stat-val {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.audit-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.audit-log-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 46vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.audit-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.audit-row.is-alert {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.34);
+  border-style: dashed;
+}
+.audit-row-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.audit-meta-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+.audit-meta-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  word-break: break-word;
+}
+@media (max-width: 560px) {
+  .audit-stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 /* Empty States */
 .empty-state {
   display: flex;
@@ -2640,6 +2720,15 @@ html[data-theme='light'] .report-cat-icon {
 }
 html[data-theme='light'] .report-cat-bar-track { background: rgba(9, 9, 11, 0.09); }
 html[data-theme='light'] .report-cat-bar-fill { background: #09090b; }
+html[data-theme='light'] .audit-stat-box,
+html[data-theme='light'] .audit-row {
+  background: rgba(9, 9, 11, 0.035);
+  border-color: rgba(9, 9, 11, 0.10);
+}
+html[data-theme='light'] .audit-row.is-alert {
+  background: rgba(9, 9, 11, 0.07);
+  border-color: rgba(9, 9, 11, 0.36);
+}
 
 html[data-theme='light'] .notif-chip {
   border-color: rgba(9, 9, 11, 0.14);

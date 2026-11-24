@@ -110,6 +110,19 @@ db.exec(`
     value TEXT NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS access_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    waktu TEXT NOT NULL,
+    event TEXT NOT NULL,
+    ip TEXT,
+    lokasi TEXT DEFAULT 'Mencari lokasi...',
+    device TEXT,
+    device_type TEXT DEFAULT 'desktop',
+    user_agent TEXT,
+    path TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 // Non-destructive column migrations for existing databases
@@ -1162,6 +1175,75 @@ export const pengeluaranRepo = {
   remove(id) {
     const res = db.prepare('DELETE FROM pengeluaran WHERE id = ?').run(Number(id));
     return res.changes > 0;
+  },
+};
+
+/* ==================== SECURITY & ACCESS AUDIT LOGS ==================== */
+export const auditRepo = {
+  create({ waktu, event, ip = '', lokasi = 'Tidak diketahui', device = '', device_type = 'desktop', user_agent = '', path: reqPath = '' }) {
+    const res = db
+      .prepare(
+        `INSERT INTO access_logs (waktu, event, ip, lokasi, device, device_type, user_agent, path)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        String(waktu || ''),
+        String(event || 'AKSES'),
+        String(ip || ''),
+        String(lokasi || 'Tidak diketahui'),
+        String(device || 'Perangkat tidak dikenal'),
+        String(device_type || 'desktop'),
+        String(user_agent || '').slice(0, 400),
+        String(reqPath || '').slice(0, 200)
+      );
+
+    // Keep table bounded to latest 500 rows
+    db.prepare(
+      'DELETE FROM access_logs WHERE id NOT IN (SELECT id FROM access_logs ORDER BY id DESC LIMIT 500)'
+    ).run();
+
+    return db.prepare('SELECT * FROM access_logs WHERE id = ?').get(res.lastInsertRowid);
+  },
+
+  updateLocation(id, lokasi) {
+    db.prepare('UPDATE access_logs SET lokasi = ? WHERE id = ?').run(String(lokasi || 'Tidak diketahui'), Number(id));
+    return db.prepare('SELECT * FROM access_logs WHERE id = ?').get(Number(id));
+  },
+
+  list({ event, limit = 100 } = {}) {
+    const safeLimit = Math.max(1, Math.min(300, Number(limit) || 100));
+    if (event && event !== 'all') {
+      return db
+        .prepare('SELECT * FROM access_logs WHERE event = ? ORDER BY id DESC LIMIT ?')
+        .all(String(event).toUpperCase(), safeLimit);
+    }
+    return db.prepare('SELECT * FROM access_logs ORDER BY id DESC LIMIT ?').all(safeLimit);
+  },
+
+  getStats() {
+    const row = db
+      .prepare(
+        `SELECT
+          COUNT(*) AS total,
+          SUM(CASE WHEN event = 'LOGIN_BERHASIL' THEN 1 ELSE 0 END) AS successCount,
+          SUM(CASE WHEN event = 'PIN_SALAH' THEN 1 ELSE 0 END) AS failedCount,
+          SUM(CASE WHEN event = 'AKSES_DITOLAK' THEN 1 ELSE 0 END) AS blockedCount,
+          COUNT(DISTINCT ip) AS uniqueIps
+         FROM access_logs`
+      )
+      .get();
+    return {
+      total: Number(row?.total) || 0,
+      successCount: Number(row?.successCount) || 0,
+      failedCount: Number(row?.failedCount) || 0,
+      blockedCount: Number(row?.blockedCount) || 0,
+      uniqueIps: Number(row?.uniqueIps) || 0,
+    };
+  },
+
+  clear() {
+    db.prepare('DELETE FROM access_logs').run();
+    return true;
   },
 };
 

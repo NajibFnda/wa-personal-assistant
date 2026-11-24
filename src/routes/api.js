@@ -10,6 +10,7 @@ import {
   MEMORI_UPLOADS_DIR,
   PROJECT_ROOT,
   VAULT_UPLOADS_DIR,
+  auditRepo,
   createConsistentBackup,
   getDatabaseStats,
   jadwalRepo,
@@ -22,6 +23,7 @@ import {
   vaultRepo,
   wishlistRepo,
 } from '../config/db.js';
+import { recordAccessEvent } from '../services/audit.js';
 import { emitDataChange, onDataChange } from '../services/events.js';
 import { getActiveModelName, isGeminiConfigured } from '../services/gemini.js';
 import { isWebPushConfigured, sendDualNotification } from '../services/notifier.js';
@@ -81,6 +83,7 @@ export function isRequestAuthorized(req) {
 
 export function requirePinMiddleware(req, res, next) {
   if (isRequestAuthorized(req)) return next();
+  recordAccessEvent(req, 'AKSES_DITOLAK');
   return res.status(401).json({ error: 'PIN diperlukan untuk mengakses dashboard.' });
 }
 
@@ -100,6 +103,7 @@ router.post('/auth/verify', (req, res) => {
   }
   const submitted = String(req.body?.pin || '').trim();
   if (!submitted || !safeEqual(submitted, pin)) {
+    recordAccessEvent(req, 'PIN_SALAH', { notifyOnFail: true });
     return res.status(401).json({ error: 'PIN salah. Silakan coba lagi.' });
   }
   const token = derivePinToken(pin);
@@ -107,10 +111,12 @@ router.post('/auth/verify', (req, res) => {
     'Set-Cookie',
     `assistant_auth=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${60 * 60 * 24 * 30}`
   );
+  recordAccessEvent(req, 'LOGIN_BERHASIL');
   return res.json({ authenticated: true });
 });
 
 router.post('/auth/logout', (req, res) => {
+  recordAccessEvent(req, 'LOGOUT');
   res.setHeader('Set-Cookie', 'assistant_auth=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
   res.json({ ok: true });
 });
@@ -684,6 +690,22 @@ router.delete('/pengeluaran/:id', (req, res) => {
   if (!deleted) return res.status(404).json({ error: 'Catatan keuangan tidak ditemukan.' });
   emitDataChange('pengeluaran', 'api');
   return res.json({ ok: true });
+});
+
+/* ==================== SECURITY & ACCESS AUDIT LOGS ==================== */
+router.get('/audit-logs', (req, res) => {
+  const limit = Number(req.query.limit) || 100;
+  const event = req.query.event ? String(req.query.event).trim() : 'all';
+  res.json({
+    logs: auditRepo.list({ event, limit }),
+    stats: auditRepo.getStats(),
+  });
+});
+
+router.delete('/audit-logs', (_req, res) => {
+  auditRepo.clear();
+  emitDataChange('audit', 'api');
+  res.json({ ok: true });
 });
 
 /* ==================== API ERROR HANDLER ==================== */

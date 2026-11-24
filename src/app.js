@@ -16,6 +16,9 @@ const PUBLIC_DIR = path.join(PROJECT_ROOT, 'public');
 export function createApp() {
   const app = express();
 
+  // Trust 1 proxy hop (Caddy reverse proxy on Azure) so req.ip gets true visitor IP
+  app.set('trust proxy', 1);
+
   app.use(cors());
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true }));

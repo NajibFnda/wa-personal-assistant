@@ -517,17 +517,44 @@ describe('All-in-One Personal Assistant End-to-End Verification (Isolated Test D
     assert.equal(subRes.status, 201);
     assert.equal(pushRepo.list().length, 1);
 
-    // Optional WEB_PIN check
+    // Optional WEB_PIN check + Security Audit Logs (PIN_SALAH, AKSES_DITOLAK, LOGIN_BERHASIL, /log)
     process.env.WEB_PIN = '2468';
     assert.equal((await fetch(`${baseUrl}/api/status`)).status, 401);
+    const badPin = await fetch(`${baseUrl}/api/auth/verify`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/130.0.0.0 Mobile Safari/537.36',
+      },
+      body: JSON.stringify({ pin: '9999' }),
+    });
+    assert.equal(badPin.status, 401);
+
     const rightPin = await fetch(`${baseUrl}/api/auth/verify`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/130.0.0.0 Mobile Safari/537.36',
+      },
       body: JSON.stringify({ pin: '2468' }),
     });
     assert.equal(rightPin.status, 200);
     const cookie = rightPin.headers.get('set-cookie').split(';')[0];
     assert.equal((await fetch(`${baseUrl}/api/status`, { headers: { Cookie: cookie } })).status, 200);
+
+    const auditRes = await fetch(`${baseUrl}/api/audit-logs`, { headers: { Cookie: cookie } });
+    assert.equal(auditRes.status, 200);
+    const auditData = await auditRes.json();
+    assert.ok(auditData.stats.failedCount >= 1);
+    assert.ok(auditData.stats.successCount >= 1);
+    const loginRow = auditData.logs.find((l) => l.event === 'LOGIN_BERHASIL');
+    assert.ok(loginRow && /Android 14.*Chrome 130/i.test(loginRow.device));
+
+    const { handleSlashCommand: runLogCmd } = await import('../src/services/commands.js');
+    const logMsg = await runLogCmd({ text: '/log', now: new Date() });
+    assert.match(logMsg.text, /Log Keamanan Web Dashboard/);
+    assert.match(logMsg.text, /PIN Salah/);
+
     process.env.WEB_PIN = '';
   });
 

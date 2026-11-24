@@ -82,6 +82,9 @@
           <button class="island-icon-btn icon-only" type="button" data-open-notif-settings title="Pengaturan Waktu Notifikasi" aria-label="Pengaturan Waktu Notifikasi">
             <i data-lucide="sliders-horizontal" class="icon-15"></i>
           </button>
+          <button id="btn-open-audit-logs" class="island-icon-btn icon-only" type="button" title="Log Keamanan & Akses" aria-label="Log Keamanan dan Akses">
+            <i data-lucide="shield" class="icon-15"></i>
+          </button>
           <button id="btn-lock-app" class="island-icon-btn icon-only hidden" type="button" title="Kunci Dashboard" aria-label="Kunci Dashboard">
             <i data-lucide="lock" class="icon-15"></i>
           </button>
@@ -1127,6 +1130,75 @@
         </div>
       </div>
       <div id="file-preview-body" class="file-preview-body"></div>
+    </div>
+  </div>
+
+  <!-- Modal Log Keamanan & Akses -->
+  <div id="modal-audit-logs" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="audit-modal-title">
+    <div class="modal-backdrop" data-close-modal="modal-audit-logs"></div>
+    <div class="modal-content modal-content-lg">
+      <div class="modal-header">
+        <div class="card-title-group">
+          <span class="title-icon"><i data-lucide="shield" class="icon-18"></i></span>
+          <div>
+            <h3 id="audit-modal-title">Log Keamanan &amp; Akses</h3>
+            <p class="text-xs muted">Riwayat login, percobaan PIN salah, IP, perkiraan lokasi &amp; perangkat</p>
+          </div>
+        </div>
+        <button class="icon-btn" type="button" data-close-modal="modal-audit-logs" aria-label="Tutup">
+          <i data-lucide="x" class="icon-16"></i>
+        </button>
+      </div>
+
+      <div class="stack-md">
+        <div class="audit-stats-grid">
+          <div class="audit-stat-box">
+            <span class="audit-stat-label">Total Log</span>
+            <span class="audit-stat-val mono" id="audit-stat-total">0</span>
+          </div>
+          <div class="audit-stat-box">
+            <span class="audit-stat-label">Login Berhasil</span>
+            <span class="audit-stat-val mono" id="audit-stat-success">0</span>
+          </div>
+          <div class="audit-stat-box">
+            <span class="audit-stat-label">PIN Salah</span>
+            <span class="audit-stat-val mono" id="audit-stat-failed">0</span>
+          </div>
+          <div class="audit-stat-box">
+            <span class="audit-stat-label">IP Unik</span>
+            <span class="audit-stat-val mono" id="audit-stat-ips">0</span>
+          </div>
+        </div>
+
+        <div class="audit-toolbar">
+          <div class="filter-bar compact-filter">
+            <button class="filter-pill active" data-audit-filter="all" type="button">Semua</button>
+            <button class="filter-pill" data-audit-filter="PIN_SALAH" type="button">PIN Salah</button>
+            <button class="filter-pill" data-audit-filter="LOGIN_BERHASIL" type="button">Berhasil</button>
+            <button class="filter-pill" data-audit-filter="AKSES_DITOLAK" type="button">Ditolak</button>
+          </div>
+          <div class="memori-actions">
+            <button id="btn-refresh-audit" class="btn btn-secondary btn-sm" type="button">
+              <i data-lucide="refresh-cw" class="icon-14"></i>
+              <span>Muat Ulang</span>
+            </button>
+            <button id="btn-clear-audit" class="btn btn-danger-ghost btn-sm" type="button">
+              <i data-lucide="trash-2" class="icon-14"></i>
+              <span>Bersihkan</span>
+            </button>
+          </div>
+        </div>
+
+        <div id="audit-log-list" class="audit-log-list"></div>
+        <div id="audit-log-empty" class="empty-state hidden">
+          <span class="empty-icon-wrap"><i data-lucide="shield-check" class="icon-24"></i></span>
+          <p>Belum ada catatan aktivitas akses pada filter ini.</p>
+        </div>
+
+        <p class="text-xs muted">
+          Catatan: Lokasi merupakan perkiraan kota/provinsi &amp; ISP berdasarkan alamat IP publik. Percobaan PIN salah otomatis mengirim peringatan ke WhatsApp.
+        </p>
+      </div>
     </div>
   </div>
 

@@ -8,6 +8,7 @@ const state = {
   financeChartMode: 'PEMASUKAN',
   financePeriod: 'this_month',
   financePeriodLabel: '',
+  auditFilter: 'all',
   jadwalList: [],
   tugasList: [],
   memoriList: [],
@@ -2289,6 +2290,118 @@ function bindFormsAndActions() {
       toast(err.message, 'error');
     }
   });
+
+  // Security Audit Logs modal
+  $('#btn-open-audit-logs')?.addEventListener('click', () => {
+    openModal('modal-audit-logs');
+    loadAuditLogs();
+  });
+
+  $('#btn-refresh-audit')?.addEventListener('click', loadAuditLogs);
+
+  $('#btn-clear-audit')?.addEventListener('click', async () => {
+    if (!confirm('Hapus seluruh riwayat log keamanan & akses?')) return;
+    try {
+      await api('/api/audit-logs', { method: 'DELETE' });
+      toast('Riwayat log keamanan dibersihkan.', 'success');
+      loadAuditLogs();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+
+  $$('[data-audit-filter]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      $$('[data-audit-filter]').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.auditFilter = btn.dataset.auditFilter || 'all';
+      loadAuditLogs();
+    });
+  });
+}
+
+/* ==================== SECURITY & ACCESS AUDIT LOGS ==================== */
+async function loadAuditLogs() {
+  try {
+    const params = new URLSearchParams({ limit: '100' });
+    if (state.auditFilter && state.auditFilter !== 'all') {
+      params.set('event', state.auditFilter);
+    }
+    const data = await api(`/api/audit-logs?${params.toString()}`);
+    renderAuditLogs(data);
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+function renderAuditLogs(data) {
+  const stats = data?.stats || {};
+  const logs = Array.isArray(data?.logs) ? data.logs : [];
+
+  if ($('#audit-stat-total')) $('#audit-stat-total').textContent = stats.total || 0;
+  if ($('#audit-stat-success')) $('#audit-stat-success').textContent = stats.successCount || 0;
+  if ($('#audit-stat-failed')) $('#audit-stat-failed').textContent = stats.failedCount || 0;
+  if ($('#audit-stat-ips')) $('#audit-stat-ips').textContent = stats.uniqueIps || 0;
+
+  const listEl = $('#audit-log-list');
+  const emptyEl = $('#audit-log-empty');
+  if (!listEl || !emptyEl) return;
+
+  if (!logs.length) {
+    listEl.innerHTML = '';
+    emptyEl.classList.remove('hidden');
+    renderIcons();
+    return;
+  }
+
+  emptyEl.classList.add('hidden');
+  const eventMeta = {
+    LOGIN_BERHASIL: { label: 'Login Berhasil', pill: 'pill-green', icon: 'shield-check', alert: false },
+    PIN_SALAH: { label: 'PIN Salah', pill: 'pill-red', icon: 'shield-alert', alert: true },
+    AKSES_DITOLAK: { label: 'Akses Ditolak', pill: 'pill-amber', icon: 'shield-off', alert: true },
+    LOGOUT: { label: 'Logout', pill: 'pill-muted', icon: 'log-out', alert: false },
+  };
+
+  listEl.innerHTML = logs
+    .map((l) => {
+      const meta = eventMeta[l.event] || { label: l.event, pill: 'pill-muted', icon: 'activity', alert: false };
+      const devIcon =
+        l.device_type === 'mobile'
+          ? 'smartphone'
+          : l.device_type === 'tablet'
+          ? 'tablet'
+          : l.device_type === 'bot'
+          ? 'terminal'
+          : 'monitor';
+      return `
+      <div class="audit-row ${meta.alert ? 'is-alert' : ''}">
+        <div class="audit-row-head">
+          <span class="pill ${meta.pill}">
+            <i data-lucide="${meta.icon}" class="icon-13"></i>
+            <span>${escapeHtml(meta.label)}</span>
+          </span>
+          <span class="mono text-xs muted">${escapeHtml(l.waktu || '-')}</span>
+        </div>
+        <div class="audit-meta-grid">
+          <div class="audit-meta-line">
+            <i data-lucide="globe" class="icon-14"></i>
+            <span class="mono fw-600">${escapeHtml(l.ip || '-')}</span>
+            <span class="muted">• ${escapeHtml(l.path || '/')}</span>
+          </div>
+          <div class="audit-meta-line">
+            <i data-lucide="map-pin" class="icon-14"></i>
+            <span>${escapeHtml(l.lokasi || 'Tidak diketahui')}</span>
+          </div>
+          <div class="audit-meta-line">
+            <i data-lucide="${devIcon}" class="icon-14"></i>
+            <span>${escapeHtml(l.device || 'Perangkat tidak dikenal')}</span>
+          </div>
+        </div>
+      </div>`;
+    })
+    .join('');
+
+  renderIcons();
 }
 
 /* ==================== REAL-TIME SSE LIVE SYNC ==================== */
@@ -2322,7 +2435,10 @@ function connectLiveEvents() {
       else if (mod === 'vault') loadVault();
       else if (mod === 'pengeluaran') loadPengeluaran();
       else if (mod === 'settings') loadWishlist();
-      else refreshAll();
+      else if (mod === 'audit') {
+        const modal = $('#modal-audit-logs');
+        if (modal && !modal.classList.contains('hidden')) loadAuditLogs();
+      } else refreshAll();
 
       if (payload.source === 'whatsapp') {
         const labels = {

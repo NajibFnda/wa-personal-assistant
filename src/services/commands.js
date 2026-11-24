@@ -3,6 +3,7 @@ import path from 'node:path';
 import {
   MEMORI_UPLOADS_DIR,
   VAULT_UPLOADS_DIR,
+  auditRepo,
   jadwalRepo,
   memoriRepo,
   normalizeCategory,
@@ -144,6 +145,7 @@ function buildHelpText() {
     '• `/rk [hari|minggu|bulan]` — Rekap keuangan & saldo',
     '',
     '🛠️ *Utilitas*',
+    '• `/log` — Lihat riwayat login & keamanan web',
     '• `/briefing` — Kirim Morning Briefing sekarang',
     '• `/backup` — Kirim backup assistant.db ke WA',
     '• `/help` atau `/menu` — Tampilkan daftar ini',
@@ -721,6 +723,28 @@ export async function handleSlashCommand({
     }
 
     /* ==================== UTILITAS ==================== */
+    case 'log':
+    case 'logs': {
+      const logs = auditRepo.list({ limit: 10 });
+      const stats = auditRepo.getStats();
+      if (!logs.length) {
+        return { text: '🛡️ Belum ada riwayat akses Web Dashboard yang tercatat.' };
+      }
+      const badgeMap = {
+        LOGIN_BERHASIL: '✅ Login Berhasil',
+        PIN_SALAH: '🚨 PIN Salah',
+        AKSES_DITOLAK: '⛔ Akses Ditolak',
+        LOGOUT: '🔒 Logout',
+      };
+      const lines = logs.map(
+        (l, i) =>
+          `${i + 1}. *${badgeMap[l.event] || l.event}* — ${l.waktu}\n    IP: \`${l.ip || '-'}\` | ${l.lokasi || '-'}\n    Perangkat: ${l.device || '-'}`
+      );
+      return {
+        text: `🛡️ *Log Keamanan Web Dashboard*\nTotal: ${stats.total} | Berhasil: ${stats.successCount} | PIN Salah: ${stats.failedCount} | IP Unik: ${stats.uniqueIps}\n\n${lines.join('\n\n')}`,
+      };
+    }
+
     case 'briefing': {
       const { runMorningBriefing } = await import('./scheduler.js');
       await runMorningBriefing(now);
