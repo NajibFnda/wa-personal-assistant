@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Environment & Secrets
+.env
+*.pem
+*.key
+
+# Runtime data & sessions
+assistant.db
+assistant.db-shm
+assistant.db-wal
+auth_info_baileys/
+uploads/
+logs/
+*.log
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/

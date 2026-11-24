@@ -1,0 +1,26 @@
+{
+  "name": "personal-assistant",
+  "version": "1.0.0",
+  "description": "All-in-One Personal Assistant (WhatsApp Multimodal Bot + Gemini AI + Web Dashboard)",
+  "type": "module",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "node --watch src/app.js",
+    "test": "node --test tests/verify.test.js",
+    "generate-vapid": "node -e \"import('web-push').then(wp => { const k = wp.generateVAPIDKeys(); console.log('VAPID_PUBLIC_KEY=' + k.publicKey); console.log('VAPID_PRIVATE_KEY=' + k.privateKey); })\""
+  },
+  "dependencies": {
+    "@google/genai": "latest",
+    "@whiskeysockets/baileys": "latest",
+    "better-sqlite3": "latest",
+    "cors": "latest",
+    "dotenv": "latest",
+    "express": "latest",
+    "multer": "latest",
+    "node-cron": "latest",
+    "pino": "latest",
+    "qrcode": "latest",
+    "web-push": "latest"
+  }
+}

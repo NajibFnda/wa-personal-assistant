@@ -1,0 +1,1102 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#060608" />
+  <meta name="description" content="All-in-One Personal Assistant — WhatsApp Multimodal Bot + Gemini AI + Web Dashboard" />
+  <title>Personal Assistant</title>
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" type="image/svg+xml" href="/icons/icon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/style.css" />
+  <script src="https://unpkg.com/lucide@latest" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" defer></script>
+</head>
+<body>
+  <!-- Optional PIN Lock Overlay -->
+  <div id="pin-overlay" class="pin-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="pin-title">
+    <div class="pin-card glass-panel">
+      <div class="pin-icon-wrap">
+        <i data-lucide="lock" class="icon-24"></i>
+      </div>
+      <h2 id="pin-title">Dashboard Terkunci</h2>
+      <p class="muted">Masukkan PIN akses untuk membuka Personal Assistant.</p>
+      <form id="pin-form" class="stack-md">
+        <input id="pin-input" type="password" inputmode="numeric" autocomplete="current-password" placeholder="Masukkan PIN akses..." required />
+        <p id="pin-error" class="form-error hidden"></p>
+        <button type="submit" class="btn btn-primary btn-full">
+          <i data-lucide="unlock" class="icon-16"></i>
+          <span>Buka Dashboard</span>
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Main iOS Glass App Shell -->
+  <div id="app-shell" class="app-shell">
+    <!-- Top Sticky Dynamic Island + Floating Pill Navigation -->
+    <header class="top-chrome">
+      <!-- Dynamic Island Status Bar -->
+      <div class="dynamic-island" role="banner">
+        <div class="island-left">
+          <span class="island-brand-dot" aria-hidden="true">
+            <i data-lucide="sparkles" class="icon-14"></i>
+          </span>
+          <span class="island-clock mono" id="island-clock">--:-- WIB</span>
+        </div>
+
+        <div class="island-divider" aria-hidden="true"></div>
+
+        <button id="island-wa-trigger" class="island-status-btn" type="button" title="Status Koneksi WhatsApp">
+          <span id="island-wa-dot" class="status-dot dot-muted"></span>
+          <span id="island-wa-label">Memeriksa WA</span>
+          <span id="island-qr-cue" class="island-qr-tag hidden">
+            <i data-lucide="qr-code" class="icon-13"></i>
+            <span>Scan QR</span>
+          </span>
+        </button>
+
+        <div class="island-divider" aria-hidden="true"></div>
+
+        <div class="island-actions">
+          <button id="btn-enable-push" class="island-icon-btn" type="button" title="Aktifkan Notifikasi Browser" aria-label="Aktifkan Notifikasi Browser">
+            <i data-lucide="bell" class="icon-15"></i>
+            <span id="island-push-label" class="island-action-text">Aktifkan Notifikasi</span>
+          </button>
+          <button class="island-icon-btn icon-only" type="button" data-open-notif-settings title="Pengaturan Waktu Notifikasi" aria-label="Pengaturan Waktu Notifikasi">
+            <i data-lucide="sliders-horizontal" class="icon-15"></i>
+          </button>
+          <button id="btn-lock-app" class="island-icon-btn icon-only hidden" type="button" title="Kunci Dashboard" aria-label="Kunci Dashboard">
+            <i data-lucide="lock" class="icon-15"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Desktop / Tablet Floating Pill Tab Navigation -->
+      <nav class="floating-pill-nav" aria-label="Navigasi Utama">
+        <span class="nav-slider" id="pill-nav-slider" aria-hidden="true"></span>
+        <button class="pill-nav-item active" data-tab="overview" type="button">
+          <i data-lucide="layout-grid" class="icon-16"></i>
+          <span>Overview</span>
+        </button>
+        <button class="pill-nav-item" data-tab="jadwal" type="button">
+          <i data-lucide="calendar-clock" class="icon-16"></i>
+          <span>Jadwal Presensi</span>
+          <span class="nav-count" id="badge-jadwal">0</span>
+        </button>
+        <button class="pill-nav-item" data-tab="tugas" type="button">
+          <i data-lucide="check-square" class="icon-16"></i>
+          <span>Tugas</span>
+          <span class="nav-count count-warn" id="badge-tugas">0</span>
+        </button>
+        <button class="pill-nav-item" data-tab="memori" type="button">
+          <i data-lucide="heart" class="icon-16"></i>
+          <span>Brankas Memori</span>
+        </button>
+        <button class="pill-nav-item" data-tab="vault" type="button">
+          <i data-lucide="folder-lock" class="icon-16"></i>
+          <span>Quick Vault</span>
+        </button>
+        <button class="pill-nav-item" data-tab="keuangan" type="button">
+          <i data-lucide="wallet" class="icon-16"></i>
+          <span>Keuangan</span>
+        </button>
+      </nav>
+    </header>
+
+    <!-- Main Workspace -->
+    <main class="main-content">
+      <!-- ==================== TAB 1: OVERVIEW (BENTO GRID) ==================== -->
+      <section id="tab-overview" class="tab-panel active">
+        <div class="section-header">
+          <div>
+            <h1>Personal Assistant</h1>
+            <p class="muted" id="overview-date-label">Menyinkronkan waktu server WIB...</p>
+          </div>
+          <div class="header-actions">
+            <button id="btn-test-notif" class="btn btn-secondary" type="button">
+              <i data-lucide="bell-ring" class="icon-16"></i>
+              <span>Test Notifikasi</span>
+            </button>
+            <button class="btn btn-secondary" type="button" data-open-notif-settings>
+              <i data-lucide="sliders-horizontal" class="icon-16"></i>
+              <span>Atur Waktu Notif</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Bento KPI Widgets -->
+        <div class="bento-grid bento-kpi">
+          <article class="glass-card kpi-card">
+            <div class="kpi-top">
+              <span class="kpi-label">Jadwal Hari Ini</span>
+              <span class="kpi-icon-badge accent-blue"><i data-lucide="calendar-clock" class="icon-16"></i></span>
+            </div>
+            <div class="kpi-value mono" id="kpi-jadwal">0</div>
+            <div class="kpi-sub" id="kpi-jadwal-sub">0 jadwal aktif total</div>
+          </article>
+
+          <article class="glass-card kpi-card">
+            <div class="kpi-top">
+              <span class="kpi-label">Tugas Aktif</span>
+              <span class="kpi-icon-badge accent-amber"><i data-lucide="list-todo" class="icon-16"></i></span>
+            </div>
+            <div class="kpi-value mono" id="kpi-tugas">0</div>
+            <div class="kpi-sub" id="kpi-tugas-sub">Pengingat H-24j dan H-3j</div>
+          </article>
+
+          <article class="glass-card kpi-card">
+            <div class="kpi-top">
+              <span class="kpi-label">Saldo Bulan Ini</span>
+              <span class="kpi-icon-badge accent-green"><i data-lucide="wallet" class="icon-16"></i></span>
+            </div>
+            <div class="kpi-value mono" id="kpi-expense">Rp 0</div>
+            <div class="kpi-sub" id="kpi-expense-today">Masuk: Rp 0 • Keluar: Rp 0</div>
+          </article>
+
+          <article class="glass-card kpi-card">
+            <div class="kpi-top">
+              <span class="kpi-label">Total Brankas Data</span>
+              <span class="kpi-icon-badge accent-purple"><i data-lucide="database" class="icon-16"></i></span>
+            </div>
+            <div class="kpi-value mono" id="kpi-total-records">0</div>
+            <div class="kpi-sub" id="kpi-vault-sub">Memori, Wishlist, dan Vault</div>
+          </article>
+        </div>
+
+        <!-- Bento Main Widgets -->
+        <div class="bento-grid bento-main">
+          <!-- Urgent Deadlines & Moments Widget -->
+          <article class="glass-card bento-widget">
+            <div class="card-header">
+              <div class="card-title-group">
+                <span class="title-icon"><i data-lucide="flame" class="icon-18"></i></span>
+                <h3>Tugas Mendesak &amp; Momen</h3>
+              </div>
+              <button class="btn btn-ghost btn-sm" type="button" data-goto="tugas">
+                <span>Kelola</span>
+                <i data-lucide="chevron-right" class="icon-14"></i>
+              </button>
+            </div>
+            <div id="overview-urgent" class="list-stack"></div>
+          </article>
+
+          <!-- Automation & Quick Actions Widget -->
+          <article class="glass-card bento-widget">
+            <div class="card-header">
+              <div class="card-title-group">
+                <span class="title-icon"><i data-lucide="zap" class="icon-18"></i></span>
+                <div>
+                  <h3>Aksi Cepat &amp; Otomasi</h3>
+                  <p class="muted text-sm" id="overview-automation-sub">Briefing 06:00 WIB &amp; Backup Minggu 23:00 WIB</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="quick-actions-grid">
+              <button id="btn-run-briefing" class="action-tile" type="button">
+                <span class="tile-icon-wrap accent-amber"><i data-lucide="sun" class="icon-18"></i></span>
+                <span class="tile-title">Morning Briefing</span>
+                <span class="tile-desc">Kirim ringkasan jadwal, tugas &amp; momen</span>
+              </button>
+
+              <button id="btn-backup-wa" class="action-tile" type="button">
+                <span class="tile-icon-wrap accent-blue"><i data-lucide="send" class="icon-18"></i></span>
+                <span class="tile-title">Backup ke WhatsApp</span>
+                <span class="tile-desc">Kirim snapshot assistant.db ke chat</span>
+              </button>
+
+              <a href="/api/actions/backup-download" class="action-tile" download>
+                <span class="tile-icon-wrap accent-green"><i data-lucide="hard-drive-download" class="icon-18"></i></span>
+                <span class="tile-title">Unduh Database</span>
+                <span class="tile-desc">Simpan cadangan SQLite ke perangkat</span>
+              </a>
+
+              <button id="btn-refresh-all" class="action-tile" type="button">
+                <span class="tile-icon-wrap accent-purple"><i data-lucide="refresh-cw" class="icon-18"></i></span>
+                <span class="tile-title">Sinkronkan Data</span>
+                <span class="tile-desc">Muat ulang seluruh modul sekarang</span>
+              </button>
+            </div>
+          </article>
+
+          <!-- Today's Schedules Widget -->
+          <article class="glass-card bento-widget">
+            <div class="card-header">
+              <div class="card-title-group">
+                <span class="title-icon"><i data-lucide="clock" class="icon-18"></i></span>
+                <h3>Jadwal &amp; Presensi Hari Ini</h3>
+              </div>
+              <button class="btn btn-ghost btn-sm" type="button" data-goto="jadwal">
+                <span>Kelola</span>
+                <i data-lucide="chevron-right" class="icon-14"></i>
+              </button>
+            </div>
+            <div id="overview-schedules" class="list-stack"></div>
+          </article>
+
+          <!-- WhatsApp Bot Widget -->
+          <article class="glass-card bento-widget">
+            <div class="card-header">
+              <div class="card-title-group">
+                <span class="title-icon"><i data-lucide="message-circle" class="icon-18"></i></span>
+                <div>
+                  <h3>Koneksi WhatsApp Bot</h3>
+                  <p class="muted text-sm">Single-User Whitelist Mode</p>
+                </div>
+              </div>
+              <span id="wa-status-pill" class="pill pill-muted">Memuat</span>
+            </div>
+
+            <div id="wa-qr-container" class="qr-preview-card hidden">
+              <div class="qr-img-frame">
+                <img id="wa-qr-img" src="" alt="QR Code Tautan WhatsApp" />
+              </div>
+              <div class="stack-xs">
+                <p class="text-sm muted">Pindai melalui WhatsApp di ponsel bot: Perangkat Tertaut lalu Tautkan Perangkat.</p>
+                <button id="btn-open-qr-modal" class="btn btn-secondary btn-sm" type="button">
+                  <i data-lucide="maximize-2" class="icon-14"></i>
+                  <span>Perbesar QR Code</span>
+                </button>
+              </div>
+            </div>
+
+            <div id="wa-connected-info" class="status-banner banner-success hidden">
+              <span class="banner-icon"><i data-lucide="check-circle-2" class="icon-20"></i></span>
+              <div>
+                <div class="fw-600">WhatsApp Terhubung 24/7</div>
+                <div class="muted text-sm" id="wa-connected-meta">Nomor bot aktif</div>
+              </div>
+            </div>
+
+            <div id="wa-disconnected-info" class="status-banner banner-warn hidden">
+              <span class="banner-icon"><i data-lucide="wifi-off" class="icon-20"></i></span>
+              <div>
+                <div class="fw-600">Belum Terhubung</div>
+                <div class="muted text-sm" id="wa-error-text">Menunggu koneksi Baileys...</div>
+              </div>
+            </div>
+
+            <div class="readiness-row">
+              <span id="chip-gemini" class="chip">Gemini AI: Memeriksa</span>
+              <span id="chip-owner" class="chip">Whitelist: Memeriksa</span>
+              <span id="chip-push" class="chip">Web Push: Memeriksa</span>
+            </div>
+
+            <div class="card-actions">
+              <button id="btn-wa-reconnect" class="btn btn-secondary btn-sm" type="button">
+                <i data-lucide="refresh-cw" class="icon-14"></i>
+                <span>Reconnect</span>
+              </button>
+              <button id="btn-wa-logout" class="btn btn-danger-ghost btn-sm" type="button">
+                <i data-lucide="log-out" class="icon-14"></i>
+                <span>Logout Sesi</span>
+              </button>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <!-- ==================== TAB 2: JADWAL & PRESENSI ==================== -->
+      <section id="tab-jadwal" class="tab-panel">
+        <div class="section-header">
+          <div>
+            <h1>Jadwal &amp; Presensi</h1>
+            <p class="muted">Pengingat rutin mingguan &amp; sekali jalan dengan dukungan Snooze via WhatsApp</p>
+          </div>
+          <button id="btn-open-jadwal-modal" class="btn btn-primary" type="button">
+            <i data-lucide="plus" class="icon-16"></i>
+            <span>Tambah Jadwal</span>
+          </button>
+        </div>
+
+        <div class="filter-bar">
+          <button class="filter-pill active" data-jadwal-filter="all" type="button">Semua</button>
+          <button class="filter-pill" data-jadwal-filter="1" type="button">Rutin Mingguan</button>
+          <button class="filter-pill" data-jadwal-filter="0" type="button">Sekali Jalan</button>
+        </div>
+
+        <div class="glass-card table-card">
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Kegiatan / Mata Kuliah</th>
+                  <th>Tipe</th>
+                  <th>Hari / Tanggal</th>
+                  <th>Jam (WIB)</th>
+                  <th>Status</th>
+                  <th class="text-right">Aksi</th>
+                </tr>
+              </thead>
+              <tbody id="jadwal-tbody"></tbody>
+            </table>
+          </div>
+          <div id="jadwal-empty" class="empty-state hidden">
+            <span class="empty-icon-wrap"><i data-lucide="calendar-off" class="icon-24"></i></span>
+            <p>Belum ada jadwal. Tambahkan manual di sini atau kirim pesan dan screenshot KRS lewat WhatsApp.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== TAB 3: TUGAS & DEADLINE ==================== -->
+      <section id="tab-tugas" class="tab-panel">
+        <div class="section-header">
+          <div>
+            <h1>Tugas &amp; Deadline</h1>
+            <p class="muted">Pengingat ganda otomatis sebelum tenggat waktu agar bebas SKS</p>
+          </div>
+          <button id="btn-open-tugas-modal" class="btn btn-primary" type="button">
+            <i data-lucide="plus" class="icon-16"></i>
+            <span>Tambah Tugas</span>
+          </button>
+        </div>
+
+        <div class="filter-bar">
+          <button class="filter-pill active" data-tugas-filter="0" type="button">Aktif</button>
+          <button class="filter-pill" data-tugas-filter="1" type="button">Selesai</button>
+          <button class="filter-pill" data-tugas-filter="all" type="button">Semua</button>
+        </div>
+
+        <div id="tugas-list" class="bento-grid bento-cards"></div>
+        <div id="tugas-empty" class="empty-state glass-card hidden">
+          <span class="empty-icon-wrap"><i data-lucide="check-circle-2" class="icon-24"></i></span>
+          <p>Tidak ada tugas pada filter ini.</p>
+        </div>
+      </section>
+
+      <!-- ==================== TAB 4: BRANKAS MEMORI & WISHLIST ==================== -->
+      <section id="tab-memori" class="tab-panel">
+        <div class="section-header">
+          <div>
+            <h1>Brankas Memori &amp; Wishlist</h1>
+            <p class="muted">Timeline catatan harian, deskripsi lengkap, galeri foto, wishlist &amp; momen spesial</p>
+          </div>
+          <div class="header-actions">
+            <button id="btn-open-memori-modal" class="btn btn-primary" type="button">
+              <i data-lucide="plus" class="icon-16"></i>
+              <span>Catat Memori</span>
+            </button>
+            <button id="btn-open-wishlist-modal" class="btn btn-secondary" type="button">
+              <i data-lucide="gift" class="icon-16"></i>
+              <span>Wishlist / Momen</span>
+            </button>
+            <button class="btn btn-secondary" type="button" data-open-notif-settings>
+              <i data-lucide="sliders-horizontal" class="icon-16"></i>
+              <span>Atur Waktu Notif</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="memori-layout">
+          <!-- Timeline Memori -->
+          <div class="stack-md">
+            <div class="glass-card search-card">
+              <div class="search-row">
+                <div class="input-icon-wrap">
+                  <i data-lucide="search" class="icon-16 input-leading-icon"></i>
+                  <input id="memori-search-q" type="search" placeholder="Cari kata kunci atau deskripsi (misal: matcha, kafe, drama)..." />
+                </div>
+                <input id="memori-search-date" type="date" aria-label="Filter tanggal memori" />
+                <button id="btn-memori-search" class="btn btn-secondary" type="button">Cari</button>
+                <button id="btn-memori-reset" class="btn btn-ghost icon-only-btn" type="button" title="Reset Filter" aria-label="Reset Filter">
+                  <i data-lucide="x" class="icon-16"></i>
+                </button>
+              </div>
+            </div>
+
+            <div id="memori-timeline" class="timeline-stack"></div>
+            <div id="memori-empty" class="empty-state glass-card hidden">
+              <span class="empty-icon-wrap"><i data-lucide="heart" class="icon-24"></i></span>
+              <p>Belum ada catatan memori. Ceritakan harinya melalui WhatsApp atau tambahkan langsung di sini.</p>
+            </div>
+          </div>
+
+          <!-- Momen Spesial & Wishlist -->
+          <div class="stack-md">
+            <div class="glass-card">
+              <div class="card-header">
+                <div class="card-title-group">
+                  <span class="title-icon"><i data-lucide="sparkles" class="icon-18"></i></span>
+                  <div>
+                    <h3>Momen Spesial</h3>
+                    <span id="momen-default-notif-badge" class="muted text-xs">Default: H-7, H-3, H-1 • 08:00 WIB</span>
+                  </div>
+                </div>
+                <button class="icon-btn" type="button" data-open-notif-settings title="Atur Waktu Notif" aria-label="Atur Waktu Notif">
+                  <i data-lucide="sliders-horizontal" class="icon-15"></i>
+                </button>
+              </div>
+              <div id="momen-list" class="list-stack"></div>
+            </div>
+
+            <div class="glass-card">
+              <div class="card-header">
+                <div class="card-title-group">
+                  <span class="title-icon"><i data-lucide="gift" class="icon-18"></i></span>
+                  <h3>Wishlist Pacar</h3>
+                </div>
+              </div>
+              <div id="wishlist-list" class="list-stack"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== TAB 5: QUICK VAULT ==================== -->
+      <section id="tab-vault" class="tab-panel">
+        <div class="section-header">
+          <div>
+            <h1>Quick Vault</h1>
+            <p class="muted">Brankas link presensi, Zoom, Google Drive, dan dokumen kuliah</p>
+          </div>
+          <button id="btn-open-vault-modal" class="btn btn-primary" type="button">
+            <i data-lucide="plus" class="icon-16"></i>
+            <span>Simpan Link / File</span>
+          </button>
+        </div>
+
+        <div class="vault-toolbar">
+          <div class="filter-bar">
+            <button class="filter-pill active" data-vault-filter="all" type="button">Semua</button>
+            <button class="filter-pill" data-vault-filter="LINK" type="button">Link</button>
+            <button class="filter-pill" data-vault-filter="FILE" type="button">File Dokumen</button>
+          </div>
+          <div class="input-icon-wrap vault-search">
+            <i data-lucide="search" class="icon-16 input-leading-icon"></i>
+            <input id="vault-search-q" type="search" placeholder="Cari kata kunci vault..." />
+          </div>
+        </div>
+
+        <div id="vault-grid" class="bento-grid bento-cards"></div>
+        <div id="vault-empty" class="empty-state glass-card hidden">
+          <span class="empty-icon-wrap"><i data-lucide="folder-lock" class="icon-24"></i></span>
+          <p>Quick Vault masih kosong. Kirim link atau dokumen ke bot WhatsApp atau klik Simpan Link / File.</p>
+        </div>
+      </section>
+
+      <!-- ==================== TAB 6: KEUANGAN ==================== -->
+      <section id="tab-keuangan" class="tab-panel">
+        <div class="section-header">
+          <div>
+            <h1>Keuangan</h1>
+            <p class="muted">Pencatatan pemasukan &amp; pengeluaran dari chat WhatsApp, foto struk, atau input manual</p>
+          </div>
+          <div class="header-actions">
+            <input id="expense-month-picker" type="month" aria-label="Pilih bulan rekap" />
+            <button id="btn-open-income-modal" class="btn btn-secondary" type="button">
+              <i data-lucide="arrow-down-left" class="icon-16"></i>
+              <span>Pemasukan</span>
+            </button>
+            <button id="btn-open-expense-modal" class="btn btn-primary" type="button">
+              <i data-lucide="arrow-up-right" class="icon-16"></i>
+              <span>Pengeluaran</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="bento-grid bento-kpi">
+          <article class="glass-card kpi-card">
+            <div class="kpi-top">
+              <span class="kpi-label">Pemasukan Bulan Ini</span>
+              <span class="kpi-icon-badge accent-green"><i data-lucide="arrow-down-left" class="icon-16"></i></span>
+            </div>
+            <div class="kpi-value mono" id="inc-month">Rp 0</div>
+            <div class="kpi-sub" id="inc-today">Hari ini: Rp 0</div>
+          </article>
+
+          <article class="glass-card kpi-card">
+            <div class="kpi-top">
+              <span class="kpi-label">Pengeluaran Bulan Ini</span>
+              <span class="kpi-icon-badge accent-amber"><i data-lucide="arrow-up-right" class="icon-16"></i></span>
+            </div>
+            <div class="kpi-value mono" id="exp-month">Rp 0</div>
+            <div class="kpi-sub" id="exp-today">Hari ini: Rp 0</div>
+          </article>
+
+          <article class="glass-card kpi-card">
+            <div class="kpi-top">
+              <span class="kpi-label">Saldo Bersih</span>
+              <span class="kpi-icon-badge accent-blue"><i data-lucide="wallet" class="icon-16"></i></span>
+            </div>
+            <div class="kpi-value mono" id="fin-balance">Rp 0</div>
+            <div class="kpi-sub" id="exp-count">0 transaksi</div>
+          </article>
+
+          <article class="glass-card kpi-card">
+            <div class="kpi-top">
+              <span class="kpi-label">7 Hari Terakhir</span>
+              <span class="kpi-icon-badge accent-purple"><i data-lucide="trending-up" class="icon-16"></i></span>
+            </div>
+            <div class="kpi-value mono" id="exp-week">Rp 0</div>
+            <div class="kpi-sub" id="inc-week">Pemasukan 7h: Rp 0</div>
+          </article>
+        </div>
+
+        <div class="two-col-grid">
+          <div class="glass-card">
+            <div class="card-header">
+              <div class="card-title-group">
+                <span class="title-icon"><i data-lucide="pie-chart" class="icon-18"></i></span>
+                <h3>Distribusi Kategori</h3>
+              </div>
+              <div class="filter-bar compact-filter">
+                <button class="filter-pill active" data-chart-mode="PENGELUARAN" type="button">Keluar</button>
+                <button class="filter-pill" data-chart-mode="PEMASUKAN" type="button">Masuk</button>
+              </div>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="expense-chart"></canvas>
+            </div>
+            <div id="expense-category-bars" class="category-bars"></div>
+          </div>
+
+          <div class="glass-card table-card">
+            <div class="card-header">
+              <div class="card-title-group">
+                <span class="title-icon"><i data-lucide="receipt" class="icon-18"></i></span>
+                <h3>Riwayat Transaksi</h3>
+              </div>
+              <div class="filter-bar compact-filter">
+                <button class="filter-pill active" data-fin-filter="all" type="button">Semua</button>
+                <button class="filter-pill" data-fin-filter="PEMASUKAN" type="button">Masuk</button>
+                <button class="filter-pill" data-fin-filter="PENGELUARAN" type="button">Keluar</button>
+              </div>
+            </div>
+            <div class="table-responsive">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Tanggal</th>
+                    <th>Item</th>
+                    <th>Kategori</th>
+                    <th class="text-right">Nominal</th>
+                    <th class="text-right">Aksi</th>
+                  </tr>
+                </thead>
+                <tbody id="expense-tbody"></tbody>
+              </table>
+            </div>
+            <div id="expense-empty" class="empty-state hidden">
+              <span class="empty-icon-wrap"><i data-lucide="wallet" class="icon-24"></i></span>
+              <p>Belum ada transaksi keuangan pada bulan ini.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Mobile Floating Pill Bottom Navigation -->
+    <nav class="mobile-pill-dock" aria-label="Navigasi Mobile">
+      <span class="dock-slider" id="dock-nav-slider" aria-hidden="true"></span>
+      <button class="dock-item active" data-tab="overview" type="button">
+        <i data-lucide="layout-grid" class="icon-18"></i>
+        <span>Overview</span>
+      </button>
+      <button class="dock-item" data-tab="jadwal" type="button">
+        <i data-lucide="calendar-clock" class="icon-18"></i>
+        <span>Jadwal</span>
+      </button>
+      <button class="dock-item" data-tab="tugas" type="button">
+        <i data-lucide="check-square" class="icon-18"></i>
+        <span>Tugas</span>
+      </button>
+      <button class="dock-item" data-tab="memori" type="button">
+        <i data-lucide="heart" class="icon-18"></i>
+        <span>Memori</span>
+      </button>
+      <button class="dock-item" data-tab="vault" type="button">
+        <i data-lucide="folder-lock" class="icon-18"></i>
+        <span>Vault</span>
+      </button>
+      <button class="dock-item" data-tab="keuangan" type="button">
+        <i data-lucide="wallet" class="icon-18"></i>
+        <span>Biaya</span>
+      </button>
+    </nav>
+  </div>
+
+  <!-- ==================== MODALS ==================== -->
+  <!-- Modal Scan QR Code WhatsApp -->
+  <div id="modal-qr" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-qr-title">
+    <div class="modal-backdrop" data-close-modal="modal-qr"></div>
+    <div class="modal-content modal-center">
+      <div class="modal-header">
+        <div class="card-title-group">
+          <span class="title-icon"><i data-lucide="qr-code" class="icon-18"></i></span>
+          <h3 id="modal-qr-title">Tautkan WhatsApp Bot</h3>
+        </div>
+        <button class="icon-btn" type="button" data-close-modal="modal-qr" aria-label="Tutup">
+          <i data-lucide="x" class="icon-16"></i>
+        </button>
+      </div>
+      <div id="modal-qr-body" class="stack-md center-stack">
+        <div id="modal-qr-frame" class="qr-img-frame qr-img-lg hidden">
+          <img id="modal-qr-img" src="" alt="QR Code WhatsApp" />
+        </div>
+        <div id="modal-qr-state" class="muted text-sm">Memuat status koneksi WhatsApp...</div>
+        <div class="card-actions center-actions">
+          <button id="modal-btn-reconnect" class="btn btn-secondary btn-sm" type="button">
+            <i data-lucide="refresh-cw" class="icon-14"></i>
+            <span>Muat Ulang Koneksi</span>
+          </button>
+          <button id="modal-btn-logout" class="btn btn-danger-ghost btn-sm" type="button">
+            <i data-lucide="log-out" class="icon-14"></i>
+            <span>Reset Sesi</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Jadwal -->
+  <div id="modal-jadwal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" data-close-modal="modal-jadwal"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="modal-jadwal-title">Tambah Jadwal</h3>
+        <button class="icon-btn" type="button" data-close-modal="modal-jadwal" aria-label="Tutup">
+          <i data-lucide="x" class="icon-16"></i>
+        </button>
+      </div>
+      <form id="form-jadwal" class="stack-md">
+        <input type="hidden" id="jadwal-id" />
+        <label class="field">
+          <span>Nama Kegiatan / Presensi</span>
+          <input id="jadwal-nama" type="text" placeholder="Contoh: Presensi Sistem Terdistribusi" required />
+        </label>
+        <label class="field">
+          <span>Tipe Jadwal</span>
+          <select id="jadwal-rutin">
+            <option value="1">Rutin Mingguan</option>
+            <option value="0">Sekali Jalan</option>
+          </select>
+        </label>
+        <div class="form-row">
+          <label class="field" id="field-jadwal-hari">
+            <span>Hari</span>
+            <select id="jadwal-hari">
+              <option>Senin</option>
+              <option>Selasa</option>
+              <option>Rabu</option>
+              <option>Kamis</option>
+              <option>Jumat</option>
+              <option>Sabtu</option>
+              <option>Minggu</option>
+            </select>
+          </label>
+          <label class="field hidden" id="field-jadwal-tanggal">
+            <span>Tanggal</span>
+            <input id="jadwal-tanggal" type="date" />
+          </label>
+          <label class="field">
+            <span>Jam (WIB)</span>
+            <input id="jadwal-jam" type="time" required />
+          </label>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close-modal="modal-jadwal">Batal</button>
+          <button type="submit" class="btn btn-primary">Simpan Jadwal</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal Tugas -->
+  <div id="modal-tugas" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" data-close-modal="modal-tugas"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="modal-tugas-title">Tambah Tugas</h3>
+        <button class="icon-btn" type="button" data-close-modal="modal-tugas" aria-label="Tutup">
+          <i data-lucide="x" class="icon-16"></i>
+        </button>
+      </div>
+      <form id="form-tugas" class="stack-md">
+        <input type="hidden" id="tugas-id" />
+        <label class="field">
+          <span>Judul Tugas</span>
+          <input id="tugas-judul" type="text" placeholder="Contoh: Laporan Praktikum RSA" required />
+        </label>
+        <label class="field">
+          <span>Mata Kuliah</span>
+          <input id="tugas-matkul" type="text" placeholder="Contoh: Kriptografi" />
+        </label>
+        <label class="field">
+          <span>Deadline (WIB)</span>
+          <input id="tugas-deadline" type="datetime-local" required />
+        </label>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close-modal="modal-tugas">Batal</button>
+          <button type="submit" class="btn btn-primary">Simpan Tugas</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal Memori -->
+  <div id="modal-memori" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" data-close-modal="modal-memori"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="modal-memori-title">Catat Memori Baru</h3>
+        <button class="icon-btn" type="button" data-close-modal="modal-memori" aria-label="Tutup">
+          <i data-lucide="x" class="icon-16"></i>
+        </button>
+      </div>
+      <form id="form-memori" class="stack-md">
+        <input type="hidden" id="memori-id" />
+        <label class="field">
+          <span>Tanggal</span>
+          <input id="memori-tanggal" type="date" required />
+        </label>
+        <label class="field">
+          <span>Cerita / Aktivitas Utama</span>
+          <textarea id="memori-isi" rows="3" placeholder="Ringkasan kejadian atau aktivitas hari itu..." required></textarea>
+        </label>
+        <label class="field">
+          <span>Deskripsi Tambahan Hari Itu (Opsional)</span>
+          <textarea id="memori-deskripsi" rows="3" placeholder="Tambahkan detail suasana, tempat, kesan, atau catatan tambahan di hari tersebut..."></textarea>
+        </label>
+        <label class="field">
+          <span>Foto Lampiran (Opsional)</span>
+          <input id="memori-media" type="file" accept="image/*" />
+        </label>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close-modal="modal-memori">Batal</button>
+          <button type="submit" class="btn btn-primary">Simpan Memori</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal Wishlist / Momen -->
+  <div id="modal-wishlist" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" data-close-modal="modal-wishlist"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="modal-wishlist-title">Tambah Wishlist / Momen Spesial</h3>
+        <button class="icon-btn" type="button" data-close-modal="modal-wishlist" aria-label="Tutup">
+          <i data-lucide="x" class="icon-16"></i>
+        </button>
+      </div>
+      <form id="form-wishlist" class="stack-md">
+        <input type="hidden" id="wishlist-id" />
+        <label class="field">
+          <span>Tipe</span>
+          <select id="wishlist-tipe">
+            <option value="WISHLIST">Wishlist</option>
+            <option value="MOMEN">Momen Spesial (Pengingat Otomatis)</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Judul</span>
+          <input id="wishlist-judul" type="text" placeholder="Contoh: Tas selempang krem / Tanggal Pacaran" required />
+        </label>
+        <div class="form-row hidden" id="field-wishlist-tanggal">
+          <label class="field">
+            <span>Tanggal Momen</span>
+            <input id="wishlist-tanggal" type="date" />
+          </label>
+          <label class="field">
+            <span>Pengulangan Reminder</span>
+            <select id="wishlist-ulang">
+              <option value="TAHUNAN">Tiap Tahun (Tahunan)</option>
+              <option value="BULANAN">Tiap Bulan (Bulanan)</option>
+              <option value="SEKALI">Sekali Saja</option>
+            </select>
+          </label>
+        </div>
+        <label class="field">
+          <span>Deskripsi / Catatan</span>
+          <textarea id="wishlist-catatan" rows="3" placeholder="Tambahkan deskripsi detail: tempat, cerita, ukuran, warna, atau ide hadiah..."></textarea>
+        </label>
+        <div id="field-wishlist-notif" class="settings-box hidden">
+          <div class="settings-box-title">
+            <i data-lucide="bell" class="icon-15"></i>
+            <span>Pengaturan Notifikasi Momen Ini</span>
+          </div>
+          <div class="text-xs muted">Kosongkan bila ingin mengikuti pengaturan default global.</div>
+          <div class="notif-chip-grid" id="wishlist-notif-days-group">
+            <label class="notif-chip"><input type="checkbox" value="30" /><span>H-30</span></label>
+            <label class="notif-chip"><input type="checkbox" value="14" /><span>H-14</span></label>
+            <label class="notif-chip"><input type="checkbox" value="7" /><span>H-7</span></label>
+            <label class="notif-chip"><input type="checkbox" value="3" /><span>H-3</span></label>
+            <label class="notif-chip"><input type="checkbox" value="1" /><span>H-1</span></label>
+            <label class="notif-chip"><input type="checkbox" value="0" /><span>Hari H</span></label>
+          </div>
+          <div class="form-row">
+            <label class="field">
+              <span>Hari Custom (pisah koma)</span>
+              <input id="wishlist-notif-custom" type="text" placeholder="Contoh: 10, 5" />
+            </label>
+            <label class="field">
+              <span>Jam Muncul Notif (WIB)</span>
+              <input id="wishlist-notif-jam" type="time" />
+            </label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close-modal="modal-wishlist">Batal</button>
+          <button type="submit" class="btn btn-primary">Simpan</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal Pengaturan Waktu Notifikasi -->
+  <div id="modal-notif-settings" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" data-close-modal="modal-notif-settings"></div>
+    <div class="modal-content modal-content-lg">
+      <div class="modal-header">
+        <div class="card-title-group">
+          <span class="title-icon"><i data-lucide="sliders-horizontal" class="icon-18"></i></span>
+          <h3>Pengaturan Waktu Notifikasi</h3>
+        </div>
+        <button class="icon-btn" type="button" data-close-modal="modal-notif-settings" aria-label="Tutup">
+          <i data-lucide="x" class="icon-16"></i>
+        </button>
+      </div>
+      <form id="form-notif-settings" class="stack-md">
+        <div class="settings-box">
+          <div class="settings-box-title">
+            <i data-lucide="sparkles" class="icon-15"></i>
+            <span>Notifikasi Momen Spesial (Default)</span>
+          </div>
+          <div class="text-xs muted">Berlaku untuk semua momen yang tidak memakai pengaturan khusus.</div>
+          <div class="notif-chip-grid" id="settings-moment-days-group">
+            <label class="notif-chip"><input type="checkbox" value="30" /><span>H-30</span></label>
+            <label class="notif-chip"><input type="checkbox" value="14" /><span>H-14</span></label>
+            <label class="notif-chip"><input type="checkbox" value="7" /><span>H-7</span></label>
+            <label class="notif-chip"><input type="checkbox" value="3" /><span>H-3</span></label>
+            <label class="notif-chip"><input type="checkbox" value="1" /><span>H-1</span></label>
+            <label class="notif-chip"><input type="checkbox" value="0" /><span>Hari H</span></label>
+          </div>
+          <div class="form-row">
+            <label class="field">
+              <span>Hari Custom Tambahan (pisah koma)</span>
+              <input id="settings-moment-custom" type="text" placeholder="Contoh: 10, 5" />
+            </label>
+            <label class="field">
+              <span>Jam Muncul Notif Momen (WIB)</span>
+              <input id="settings-moment-time" type="time" required />
+            </label>
+          </div>
+        </div>
+
+        <div class="settings-box">
+          <div class="settings-row-head">
+            <div>
+              <div class="settings-box-title">
+                <i data-lucide="sun" class="icon-15"></i>
+                <span>Morning Briefing Harian</span>
+              </div>
+              <div class="text-xs muted">Kirim ringkasan jadwal, tugas &amp; momen setiap hari</div>
+            </div>
+            <label class="switch">
+              <input id="settings-briefing-enabled" type="checkbox" checked />
+              <span class="slider"></span>
+            </label>
+          </div>
+          <label class="field">
+            <span>Jam Kirim Morning Briefing (WIB)</span>
+            <input id="settings-briefing-time" type="time" required />
+          </label>
+        </div>
+
+        <div class="settings-box">
+          <div class="settings-box-title">
+            <i data-lucide="check-square" class="icon-15"></i>
+            <span>Pengingat Tugas &amp; Deadline</span>
+          </div>
+          <div class="form-row">
+            <label class="field">
+              <span>Pengingat 1 (Jam sebelum deadline)</span>
+              <input id="settings-task-first" type="number" min="2" max="168" required />
+            </label>
+            <label class="field">
+              <span>Pengingat 2 Mendesak (Jam sebelum)</span>
+              <input id="settings-task-second" type="number" min="1" max="72" required />
+            </label>
+          </div>
+        </div>
+
+        <div class="settings-box">
+          <div class="settings-row-head">
+            <div>
+              <div class="settings-box-title">
+                <i data-lucide="database" class="icon-15"></i>
+                <span>Auto-Backup Database Mingguan</span>
+              </div>
+              <div class="text-xs muted">Kirim cadangan assistant.db otomatis ke WhatsApp</div>
+            </div>
+            <label class="switch">
+              <input id="settings-backup-enabled" type="checkbox" checked />
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div class="form-row">
+            <label class="field">
+              <span>Hari Backup</span>
+              <select id="settings-backup-day">
+                <option value="0">Minggu</option>
+                <option value="1">Senin</option>
+                <option value="2">Selasa</option>
+                <option value="3">Rabu</option>
+                <option value="4">Kamis</option>
+                <option value="5">Jumat</option>
+                <option value="6">Sabtu</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Jam Backup (WIB)</span>
+              <input id="settings-backup-time" type="time" required />
+            </label>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close-modal="modal-notif-settings">Batal</button>
+          <button type="submit" class="btn btn-primary">Simpan Pengaturan</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal Vault -->
+  <div id="modal-vault" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" data-close-modal="modal-vault"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="modal-vault-title">Simpan ke Quick Vault</h3>
+        <button class="icon-btn" type="button" data-close-modal="modal-vault" aria-label="Tutup">
+          <i data-lucide="x" class="icon-16"></i>
+        </button>
+      </div>
+      <form id="form-vault" class="stack-md">
+        <input type="hidden" id="vault-id" />
+        <label class="field" id="field-vault-tipe">
+          <span>Tipe Item</span>
+          <select id="vault-tipe">
+            <option value="LINK">Link / URL</option>
+            <option value="FILE">File Dokumen (PDF / DOCX / ZIP / Gambar)</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Kata Kunci Pencarian</span>
+          <input id="vault-key" type="text" placeholder="Contoh: Link presensi kripto / Silabus AI" required />
+        </label>
+        <label class="field" id="field-vault-link">
+          <span>URL / Teks Link</span>
+          <input id="vault-url" type="text" placeholder="https://..." />
+        </label>
+        <label class="field hidden" id="field-vault-file">
+          <span>Pilih File</span>
+          <input id="vault-file" type="file" />
+        </label>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close-modal="modal-vault">Batal</button>
+          <button type="submit" class="btn btn-primary">Simpan ke Vault</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal Keuangan (Pengeluaran & Pemasukan) -->
+  <div id="modal-expense" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" data-close-modal="modal-expense"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="modal-expense-title">Catat Pengeluaran</h3>
+        <button class="icon-btn" type="button" data-close-modal="modal-expense" aria-label="Tutup">
+          <i data-lucide="x" class="icon-16"></i>
+        </button>
+      </div>
+      <form id="form-expense" class="stack-md">
+        <input type="hidden" id="expense-tipe" value="PENGELUARAN" />
+        <div class="seg-control" role="tablist" aria-label="Jenis transaksi">
+          <button class="seg-btn active" type="button" data-set-fin-type="PENGELUARAN">
+            <i data-lucide="arrow-up-right" class="icon-14"></i>
+            <span>Pengeluaran</span>
+          </button>
+          <button class="seg-btn" type="button" data-set-fin-type="PEMASUKAN">
+            <i data-lucide="arrow-down-left" class="icon-14"></i>
+            <span>Pemasukan</span>
+          </button>
+        </div>
+        <label class="field">
+          <span id="expense-item-label">Nama Item</span>
+          <input id="expense-item" type="text" placeholder="Contoh: Makan siang / Bensin" required />
+        </label>
+        <div class="form-row">
+          <label class="field">
+            <span>Nominal (Rp)</span>
+            <input id="expense-nominal" type="number" min="1" step="100" placeholder="18000" required />
+          </label>
+          <label class="field">
+            <span>Tanggal</span>
+            <input id="expense-tanggal" type="date" required />
+          </label>
+        </div>
+        <label class="field">
+          <span>Kategori</span>
+          <select id="expense-kategori">
+            <option>Makan &amp; Minum</option>
+            <option>Transportasi</option>
+            <option>Akademik</option>
+            <option>Hiburan</option>
+            <option>Lainnya</option>
+          </select>
+        </label>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close-modal="modal-expense">Batal</button>
+          <button type="submit" id="expense-submit-btn" class="btn btn-primary">Simpan Pengeluaran</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal Preview Dokumen (PDF / Teks) -->
+  <div id="modal-file-preview" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="file-preview-title">
+    <div class="modal-backdrop" data-close-modal="modal-file-preview"></div>
+    <div class="modal-content modal-preview-lg">
+      <div class="modal-header">
+        <div class="card-title-group">
+          <span class="title-icon"><i data-lucide="file-text" class="icon-18"></i></span>
+          <div>
+            <h3 id="file-preview-title">Pratinjau Dokumen</h3>
+            <div id="file-preview-meta" class="text-xs muted"></div>
+          </div>
+        </div>
+        <div class="memori-actions">
+          <a id="file-preview-download" class="btn btn-primary btn-sm" href="#" download>
+            <i data-lucide="download" class="icon-14"></i>
+            <span>Unduh</span>
+          </a>
+          <button class="icon-btn" type="button" data-close-modal="modal-file-preview" aria-label="Tutup">
+            <i data-lucide="x" class="icon-16"></i>
+          </button>
+        </div>
+      </div>
+      <div id="file-preview-body" class="file-preview-body"></div>
+    </div>
+  </div>
+
+  <!-- Lightbox Modal for Photos -->
+  <div id="lightbox" class="lightbox hidden" role="dialog" aria-modal="true">
+    <div class="lightbox-backdrop" id="lightbox-close"></div>
+    <img id="lightbox-img" src="" alt="Preview Foto Memori" />
+    <button class="lightbox-btn" id="lightbox-x" type="button" aria-label="Tutup Preview">
+      <i data-lucide="x" class="icon-20"></i>
+    </button>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>
