@@ -1,9 +1,10 @@
-const CACHE_NAME = 'personal-assistant-v19';
+const CACHE_NAME = 'personal-assistant-v20';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/manifest.json',
   '/css/style.css',
+  '/js/lucide-custom.js',
   '/js/app.js',
   '/icons/icon.svg',
 ];
