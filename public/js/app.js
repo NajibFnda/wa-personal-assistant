@@ -65,43 +65,21 @@ const CATEGORY_COLORS_LIGHT = {
 };
 
 function getCurrentTheme() {
-  return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+  return 'light';
 }
 
 function getCategoryColors() {
-  return getCurrentTheme() === 'light' ? CATEGORY_COLORS_LIGHT : CATEGORY_COLORS_DARK;
+  return CATEGORY_COLORS_LIGHT;
 }
 
-function applyTheme(theme, persist = true) {
-  const next = theme === 'light' ? 'light' : 'dark';
-  document.documentElement.dataset.theme = next;
+function applyTheme() {
+  document.documentElement.dataset.theme = 'light';
   const meta = $('#meta-theme-color');
-  if (meta) meta.setAttribute('content', next === 'light' ? '#f2f2f5' : '#060608');
-  if (persist) {
-    try {
-      localStorage.setItem('assistant_theme', next);
-    } catch {
-      // ignore storage errors
-    }
-  }
-  const btn = $('#btn-toggle-theme');
-  if (btn) {
-    const isLight = next === 'light';
-    btn.title = isLight ? 'Ubah ke Mode Gelap' : 'Ubah ke Mode Terang';
-    btn.setAttribute('aria-label', btn.title);
-    btn.innerHTML = `<i data-lucide="${isLight ? 'moon' : 'sun'}" class="icon-15"></i>`;
-    renderIcons();
-  }
-  if (state.expenseData) {
-    renderExpenseChart(state.expenseData);
-  }
+  if (meta) meta.setAttribute('content', '#f5f5f7');
 }
 
 function initThemeToggle() {
-  applyTheme(getCurrentTheme(), false);
-  $('#btn-toggle-theme')?.addEventListener('click', () => {
-    applyTheme(getCurrentTheme() === 'light' ? 'dark' : 'light', true);
-  });
+  applyTheme();
 }
 
 const EXPENSE_CATEGORIES = ['Makan & Minum', 'Transportasi', 'Akademik', 'Hiburan', 'Lainnya'];
@@ -120,7 +98,7 @@ function renderIcons() {
     iconRenderQueued = false;
     if (!window.lucide || typeof window.lucide.createIcons !== 'function') return;
     if (!document.querySelector('[data-lucide]')) return;
-    window.lucide.createIcons({ attrs: { 'stroke-width': 1.8 } });
+    window.lucide.createIcons({ attrs: { 'stroke-width': 1.75 } });
   });
 }
 
@@ -234,7 +212,7 @@ function startClock() {
 }
 
 /* ==================== NAVIGATION & SLIDING PILL INDICATOR ==================== */
-const TAB_ORDER = ['overview', 'jadwal', 'tugas', 'catatan', 'memori', 'vault', 'keuangan'];
+const TAB_ORDER = ['overview', 'jadwal', 'tugas', 'memori', 'catatan', 'vault', 'keuangan'];
 
 function moveSlider(sliderEl, activeBtn, animate = true) {
   if (!sliderEl || !activeBtn) return;
@@ -657,7 +635,22 @@ function renderOverview(data) {
   $('#kpi-total-records').textContent = stats.total_records;
   $('#kpi-vault-sub').textContent = `${stats.memori_pacar} memori • ${stats.catatan_kuliah || 0} catatan • ${stats.vault} vault`;
 
-  // Dynamic Island & Overview WA Status
+  // Overview Finance Summary Card
+  const ovInc = Number(overview.monthIncomeTotal) || 0;
+  const ovExp = Number(overview.monthExpenseTotal) || 0;
+  const ovBal = Number(overview.monthBalance ?? ovInc - ovExp) || 0;
+  if ($('#ov-fin-income')) $('#ov-fin-income').textContent = formatRupiah(ovInc);
+  if ($('#ov-fin-expense')) $('#ov-fin-expense').textContent = formatRupiah(ovExp);
+  if ($('#ov-fin-balance')) $('#ov-fin-balance').textContent = formatSignedRupiah(ovBal);
+  const ovRatio = ovInc > 0 ? Math.round((ovExp / ovInc) * 100) : ovExp > 0 ? 100 : 0;
+  if ($('#ov-fin-ratio-label')) $('#ov-fin-ratio-label').textContent = `${ovRatio}%`;
+  const ovBar = $('#ov-fin-ratio-bar');
+  if (ovBar) {
+    ovBar.style.width = `${Math.min(100, ovRatio)}%`;
+    ovBar.className = `budget-bar-fill ${ovRatio >= 100 ? 'is-over' : ovRatio >= 80 ? 'is-warn' : 'bar-blue'}`;
+  }
+
+  // Top Bar & Overview WA Status
   const islandDot = $('#island-wa-dot');
   const islandLabel = $('#island-wa-label');
   const islandQrCue = $('#island-qr-cue');
@@ -673,14 +666,14 @@ function renderOverview(data) {
 
   if (whatsapp.status === 'connected') {
     islandDot.className = 'status-dot dot-green';
-    islandLabel.textContent = 'WA Connected';
+    islandLabel.textContent = 'Bot Online';
     pill.className = 'pill pill-green';
-    pill.textContent = 'Connected';
+    pill.textContent = 'Bot Online';
     connBox.classList.remove('hidden');
     $('#wa-connected-meta').textContent = `Bot: ${whatsapp.connectedPhone || '-'} • Aktif sejak ${whatsapp.lastConnectedAt || '-'}`;
   } else if (whatsapp.status === 'qr' && whatsapp.qrCodeDataUrl) {
     islandDot.className = 'status-dot dot-amber';
-    islandLabel.textContent = 'Bot Offline';
+    islandLabel.textContent = 'Scan QR';
     islandQrCue.classList.remove('hidden');
     pill.className = 'pill pill-amber';
     pill.textContent = 'Menunggu Scan QR';
@@ -688,17 +681,17 @@ function renderOverview(data) {
     $('#wa-qr-img').src = whatsapp.qrCodeDataUrl;
   } else if (whatsapp.status === 'connecting') {
     islandDot.className = 'status-dot dot-amber';
-    islandLabel.textContent = 'Connecting';
+    islandLabel.textContent = 'Menghubungkan';
     pill.className = 'pill pill-blue';
     pill.textContent = 'Menghubungkan';
     discBox.classList.remove('hidden');
     $('#wa-error-text').textContent = 'Menghubungkan ke server WhatsApp (Baileys)...';
   } else {
     islandDot.className = 'status-dot dot-red';
-    islandLabel.textContent = 'Disconnected';
+    islandLabel.textContent = 'Bot Offline';
     islandQrCue.classList.remove('hidden');
     pill.className = 'pill pill-red';
-    pill.textContent = 'Disconnected';
+    pill.textContent = 'Offline';
     discBox.classList.remove('hidden');
     $('#wa-error-text').textContent = whatsapp.lastError || 'Belum terhubung ke WhatsApp.';
   }
@@ -1900,6 +1893,8 @@ function renderExpenseChart(data) {
   if (ringEl) {
     ringEl.style.strokeDasharray = circumference.toFixed(2);
     ringEl.style.strokeDashoffset = offset.toFixed(2);
+    ringEl.classList.toggle('is-over', rawPct >= 100);
+    ringEl.classList.toggle('is-warn', rawPct >= 80 && rawPct < 100);
   }
   const pctEl = $('#report-ring-pct');
   if (pctEl) {
@@ -2696,7 +2691,7 @@ function renderTelemetry(data) {
   }
   if ($('#tel-gemini-bar')) {
     $('#tel-gemini-bar').style.width = `${Math.min(100, Math.max(gem.todayRequests > 0 ? 2 : 0, gem.pct))}%`;
-    $('#tel-gemini-bar').className = `budget-bar-fill ${gem.pct >= 95 ? 'is-over' : gem.pct >= 80 ? 'is-warn' : ''}`;
+    $('#tel-gemini-bar').className = `budget-bar-fill ${gem.pct >= 95 ? 'is-over' : gem.pct >= 80 ? 'is-warn' : 'bar-blue'}`;
   }
 
   if ($('#tel-groq-meta')) {
@@ -2704,7 +2699,7 @@ function renderTelemetry(data) {
   }
   if ($('#tel-groq-bar')) {
     $('#tel-groq-bar').style.width = `${Math.min(100, Math.max(grq.todayRequests > 0 ? 2 : 0, grq.pct))}%`;
-    $('#tel-groq-bar').className = `budget-bar-fill ${grq.pct >= 95 ? 'is-over' : grq.pct >= 80 ? 'is-warn' : ''}`;
+    $('#tel-groq-bar').className = `budget-bar-fill ${grq.pct >= 95 ? 'is-over' : grq.pct >= 80 ? 'is-warn' : 'bar-green'}`;
   }
 
   if ($('#tel-uptime')) $('#tel-uptime').textContent = formatUptime(srv.uptimeSeconds);
@@ -2868,8 +2863,26 @@ async function triggerWaLogout() {
 }
 
 function bindFormsAndActions() {
-  // Dynamic Island & Overview actions
+  // Top bar & Overview actions
   $('#btn-enable-push')?.addEventListener('click', subscribeBrowserPush);
+  $('#btn-header-ics')?.addEventListener('click', async () => {
+    try {
+      const info = state.calendarInfo || (await api('/api/calendar/info'));
+      state.calendarInfo = info;
+      renderCalendarInfo(info);
+      const fullUrl = `${window.location.origin}${info.path || '/api/calendar.ics'}`;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(fullUrl);
+        toast('Link Calendar Sync (.ics) disalin ke clipboard.', 'success');
+      }
+      switchTab('jadwal');
+      setTimeout(() => {
+        $('.calendar-sync-card')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 150);
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
   $('#island-wa-trigger')?.addEventListener('click', () => {
     const st = state.statusData?.whatsapp?.status;
     if (st !== 'connected') {

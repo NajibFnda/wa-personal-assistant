@@ -1,19 +1,9 @@
 <!DOCTYPE html>
-<html lang="id">
+<html lang="id" data-theme="light">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <meta name="theme-color" id="meta-theme-color" content="#060608" />
-  <script>
-    (function () {
-      try {
-        var t = localStorage.getItem('assistant_theme') === 'light' ? 'light' : 'dark';
-        document.documentElement.dataset.theme = t;
-        var m = document.getElementById('meta-theme-color');
-        if (m) m.setAttribute('content', t === 'light' ? '#f2f2f5' : '#060608');
-      } catch (e) {}
-    })();
-  </script>
+  <meta name="theme-color" id="meta-theme-color" content="#f5f5f7" />
   <meta name="description" content="All-in-One Personal Assistant — WhatsApp Multimodal Bot + Gemini AI + Web Dashboard" />
   <title>Personal Assistant</title>
   <link rel="manifest" href="/manifest.json" />
@@ -22,12 +12,12 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/css/style.css" />
-  <script src="/js/lucide-custom.js" defer></script>
+  <script src="https://unpkg.com/lucide@latest" defer></script>
 </head>
 <body>
   <!-- Optional PIN Lock Overlay -->
   <div id="pin-overlay" class="pin-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="pin-title">
-    <div class="pin-card glass-panel">
+    <div class="pin-card">
       <div class="pin-icon-wrap">
         <i data-lucide="lock" class="icon-24"></i>
       </div>
@@ -44,90 +34,95 @@
     </div>
   </div>
 
-  <!-- Main iOS Glass App Shell -->
+  <!-- Main macOS Sonoma Light App Shell -->
   <div id="app-shell" class="app-shell">
-    <!-- Top Sticky Dynamic Island + Floating Pill Navigation -->
-    <header class="top-chrome">
-      <!-- Dynamic Island Status Bar -->
-      <div class="dynamic-island" role="banner">
-        <div class="island-left">
-          <span class="island-brand-dot" aria-hidden="true">
-            <i data-lucide="sparkles" class="icon-14"></i>
+    <!-- Translucent Light Vibrancy Top Bar + macOS Segmented Control Navigation -->
+    <header class="top-chrome" role="banner">
+      <div class="topbar-inner">
+        <div class="topbar-brand">
+          <span class="brand-squircle" aria-hidden="true">
+            <i data-lucide="sparkles" class="icon-16"></i>
           </span>
-          <span class="island-clock mono" id="island-clock">--:-- WIB</span>
+          <div class="brand-meta">
+            <span class="brand-title">Personal Assistant</span>
+            <span class="island-clock mono" id="island-clock">--:-- WIB</span>
+          </div>
         </div>
 
-        <div class="island-divider" aria-hidden="true"></div>
-
-        <button id="island-wa-trigger" class="island-status-btn" type="button" title="Status Koneksi WhatsApp">
-          <span id="island-wa-dot" class="status-dot dot-muted"></span>
-          <span id="island-wa-label">Memeriksa WA</span>
-          <span id="island-qr-cue" class="island-qr-tag hidden">
-            <i data-lucide="qr-code" class="icon-13"></i>
-            <span>Scan QR</span>
-          </span>
-        </button>
-
-        <div class="island-divider" aria-hidden="true"></div>
-
-        <div class="island-actions">
-          <button id="btn-open-spotlight" class="island-icon-btn icon-only" type="button" title="Pencarian Cepat (Ctrl+K)" aria-label="Pencarian Cepat">
-            <i data-lucide="search" class="icon-15"></i>
+        <div class="topbar-actions">
+          <button id="island-wa-trigger" class="island-status-btn" type="button" title="Status Koneksi WhatsApp">
+            <span id="island-wa-dot" class="status-dot dot-muted"></span>
+            <span id="island-wa-label">Memeriksa WA</span>
+            <span id="island-qr-cue" class="island-qr-tag hidden">
+              <i data-lucide="qr-code" class="icon-13"></i>
+              <span>Scan QR</span>
+            </span>
           </button>
-          <button id="btn-toggle-theme" class="island-icon-btn icon-only" type="button" title="Ubah ke Mode Terang" aria-label="Ubah Tema Gelap atau Terang">
-            <i data-lucide="sun" class="icon-15"></i>
-          </button>
+
           <button id="btn-enable-push" class="island-icon-btn" type="button" title="Aktifkan Notifikasi Browser" aria-label="Aktifkan Notifikasi Browser">
             <i data-lucide="bell" class="icon-15"></i>
             <span id="island-push-label" class="island-action-text">Aktifkan Notifikasi</span>
           </button>
-          <button class="island-icon-btn icon-only" type="button" data-open-notif-settings title="Pengaturan Waktu Notifikasi" aria-label="Pengaturan Waktu Notifikasi">
-            <i data-lucide="sliders-horizontal" class="icon-15"></i>
+
+          <button id="btn-header-ics" class="island-icon-btn" type="button" title="Salin Link Calendar Sync (.ics)" aria-label="Calendar Sync ICS">
+            <i data-lucide="calendar" class="icon-15"></i>
+            <span class="island-action-text">Calendar Sync (.ics)</span>
           </button>
-          <button id="btn-open-audit-logs" class="island-icon-btn icon-only" type="button" title="Log Keamanan & Akses" aria-label="Log Keamanan dan Akses">
-            <i data-lucide="shield" class="icon-15"></i>
-          </button>
-          <button id="btn-lock-app" class="island-icon-btn icon-only hidden" type="button" title="Kunci Dashboard" aria-label="Kunci Dashboard">
-            <i data-lucide="lock" class="icon-15"></i>
-          </button>
+
+          <div class="topbar-icon-group">
+            <button id="btn-open-spotlight" class="island-icon-btn icon-only" type="button" title="Pencarian Cepat (Ctrl+K)" aria-label="Pencarian Cepat">
+              <i data-lucide="search" class="icon-15"></i>
+            </button>
+            <button class="island-icon-btn icon-only" type="button" data-open-notif-settings title="Pengaturan Waktu Notifikasi" aria-label="Pengaturan Waktu Notifikasi">
+              <i data-lucide="sliders-horizontal" class="icon-15"></i>
+            </button>
+            <button id="btn-open-audit-logs" class="island-icon-btn icon-only" type="button" title="Log Keamanan & Akses" aria-label="Log Keamanan dan Akses">
+              <i data-lucide="shield" class="icon-15"></i>
+            </button>
+            <button id="btn-lock-app" class="island-icon-btn icon-only hidden" type="button" title="Kunci Dashboard" aria-label="Kunci Dashboard">
+              <i data-lucide="lock" class="icon-15"></i>
+            </button>
+          </div>
         </div>
       </div>
 
-      <!-- Desktop / Tablet Floating Pill Tab Navigation -->
-      <nav class="floating-pill-nav" aria-label="Navigasi Utama">
-        <span class="nav-slider" id="pill-nav-slider" aria-hidden="true"></span>
-        <button class="pill-nav-item active" data-tab="overview" type="button">
-          <i data-lucide="layout-grid" class="icon-16"></i>
-          <span>Overview</span>
-        </button>
-        <button class="pill-nav-item" data-tab="jadwal" type="button">
-          <i data-lucide="calendar-clock" class="icon-16"></i>
-          <span>Jadwal Presensi</span>
-          <span class="nav-count" id="badge-jadwal">0</span>
-        </button>
-        <button class="pill-nav-item" data-tab="tugas" type="button">
-          <i data-lucide="check-square" class="icon-16"></i>
-          <span>Tugas</span>
-          <span class="nav-count count-warn" id="badge-tugas">0</span>
-        </button>
-        <button class="pill-nav-item" data-tab="catatan" type="button">
-          <i data-lucide="book-open" class="icon-16"></i>
-          <span>Catatan</span>
-          <span class="nav-count" id="badge-catatan">0</span>
-        </button>
-        <button class="pill-nav-item" data-tab="memori" type="button">
-          <i data-lucide="heart" class="icon-16"></i>
-          <span>Brankas Memori</span>
-        </button>
-        <button class="pill-nav-item" data-tab="vault" type="button">
-          <i data-lucide="folder-lock" class="icon-16"></i>
-          <span>Quick Vault</span>
-        </button>
-        <button class="pill-nav-item" data-tab="keuangan" type="button">
-          <i data-lucide="wallet" class="icon-16"></i>
-          <span>Keuangan</span>
-        </button>
-      </nav>
+      <!-- Desktop / Tablet macOS Segmented Control Navigation -->
+      <div class="segmented-bar-wrap">
+        <nav class="floating-pill-nav macos-segmented" aria-label="Navigasi Utama">
+          <span class="nav-slider" id="pill-nav-slider" aria-hidden="true"></span>
+          <button class="pill-nav-item active" data-tab="overview" type="button">
+            <i data-lucide="layout-grid" class="icon-15"></i>
+            <span>Overview</span>
+          </button>
+          <button class="pill-nav-item" data-tab="jadwal" type="button">
+            <i data-lucide="calendar-clock" class="icon-15"></i>
+            <span>Jadwal Presensi</span>
+            <span class="nav-count" id="badge-jadwal">0</span>
+          </button>
+          <button class="pill-nav-item" data-tab="tugas" type="button">
+            <i data-lucide="check-square" class="icon-15"></i>
+            <span>Tugas</span>
+            <span class="nav-count count-warn" id="badge-tugas">0</span>
+          </button>
+          <button class="pill-nav-item" data-tab="memori" type="button">
+            <i data-lucide="heart" class="icon-15"></i>
+            <span>Brankas Pacar</span>
+          </button>
+          <button class="pill-nav-item" data-tab="catatan" type="button">
+            <i data-lucide="book-open" class="icon-15"></i>
+            <span>Catatan Kuliah</span>
+            <span class="nav-count" id="badge-catatan">0</span>
+          </button>
+          <button class="pill-nav-item" data-tab="vault" type="button">
+            <i data-lucide="folder-lock" class="icon-15"></i>
+            <span>Quick Vault</span>
+          </button>
+          <button class="pill-nav-item" data-tab="keuangan" type="button">
+            <i data-lucide="wallet" class="icon-15"></i>
+            <span>Keuangan</span>
+          </button>
+        </nav>
+      </div>
     </header>
 
     <!-- Main Workspace -->
@@ -190,67 +185,13 @@
           </article>
         </div>
 
-        <!-- Bento Main Widgets -->
+        <!-- Bento Main Widgets: Jadwal Hari Ini, Tugas Terdekat, Ringkasan Keuangan & WhatsApp Bot -->
         <div class="bento-grid bento-main">
-          <!-- Urgent Deadlines & Moments Widget -->
-          <article class="glass-card bento-widget">
-            <div class="card-header">
-              <div class="card-title-group">
-                <span class="title-icon"><i data-lucide="flame" class="icon-18"></i></span>
-                <h3>Tugas Mendesak &amp; Momen</h3>
-              </div>
-              <button class="btn btn-ghost btn-sm" type="button" data-goto="tugas">
-                <span>Kelola</span>
-                <i data-lucide="chevron-right" class="icon-14"></i>
-              </button>
-            </div>
-            <div id="overview-urgent" class="list-stack"></div>
-          </article>
-
-          <!-- Automation & Quick Actions Widget -->
-          <article class="glass-card bento-widget">
-            <div class="card-header">
-              <div class="card-title-group">
-                <span class="title-icon"><i data-lucide="zap" class="icon-18"></i></span>
-                <div>
-                  <h3>Aksi Cepat &amp; Otomasi</h3>
-                  <p class="muted text-sm" id="overview-automation-sub">Briefing 06:00 WIB &amp; Backup Minggu 23:00 WIB</p>
-                </div>
-              </div>
-            </div>
-
-            <div class="quick-actions-grid">
-              <button id="btn-run-briefing" class="action-tile" type="button">
-                <span class="tile-icon-wrap accent-amber"><i data-lucide="sun" class="icon-18"></i></span>
-                <span class="tile-title">Morning Briefing</span>
-                <span class="tile-desc">Kirim ringkasan jadwal, tugas &amp; momen</span>
-              </button>
-
-              <button id="btn-backup-wa" class="action-tile" type="button">
-                <span class="tile-icon-wrap accent-blue"><i data-lucide="send" class="icon-18"></i></span>
-                <span class="tile-title">Backup ke WhatsApp</span>
-                <span class="tile-desc">Kirim snapshot assistant.db ke chat</span>
-              </button>
-
-              <a href="/api/actions/backup-download" class="action-tile" download>
-                <span class="tile-icon-wrap accent-green"><i data-lucide="hard-drive-download" class="icon-18"></i></span>
-                <span class="tile-title">Unduh Database</span>
-                <span class="tile-desc">Simpan cadangan SQLite ke perangkat</span>
-              </a>
-
-              <button id="btn-refresh-all" class="action-tile" type="button">
-                <span class="tile-icon-wrap accent-purple"><i data-lucide="refresh-cw" class="icon-18"></i></span>
-                <span class="tile-title">Sinkronkan Data</span>
-                <span class="tile-desc">Muat ulang seluruh modul sekarang</span>
-              </button>
-            </div>
-          </article>
-
           <!-- Today's Schedules Widget -->
           <article class="glass-card bento-widget">
             <div class="card-header">
               <div class="card-title-group">
-                <span class="title-icon"><i data-lucide="clock" class="icon-18"></i></span>
+                <span class="title-icon accent-blue"><i data-lucide="clock" class="icon-18"></i></span>
                 <h3>Jadwal &amp; Presensi Hari Ini</h3>
               </div>
               <button class="btn btn-ghost btn-sm" type="button" data-goto="jadwal">
@@ -261,14 +202,69 @@
             <div id="overview-schedules" class="list-stack"></div>
           </article>
 
+          <!-- Urgent Deadlines & Moments Widget -->
+          <article class="glass-card bento-widget">
+            <div class="card-header">
+              <div class="card-title-group">
+                <span class="title-icon accent-amber"><i data-lucide="flame" class="icon-18"></i></span>
+                <h3>Tugas Terdekat &amp; Momen</h3>
+              </div>
+              <button class="btn btn-ghost btn-sm" type="button" data-goto="tugas">
+                <span>Kelola</span>
+                <i data-lucide="chevron-right" class="icon-14"></i>
+              </button>
+            </div>
+            <div id="overview-urgent" class="list-stack"></div>
+          </article>
+
+          <!-- Overview Finance Summary Widget -->
+          <article class="glass-card bento-widget">
+            <div class="card-header">
+              <div class="card-title-group">
+                <span class="title-icon accent-green"><i data-lucide="wallet" class="icon-18"></i></span>
+                <div>
+                  <h3>Ringkasan Keuangan</h3>
+                  <p class="muted text-xs">Arus kas bulan berjalan</p>
+                </div>
+              </div>
+              <button class="btn btn-ghost btn-sm" type="button" data-goto="keuangan">
+                <span>Detail</span>
+                <i data-lucide="chevron-right" class="icon-14"></i>
+              </button>
+            </div>
+            <div class="overview-fin-grid">
+              <div class="overview-fin-box">
+                <span class="telemetry-stat-label">Pemasukan</span>
+                <span class="overview-fin-val mono amount-income" id="ov-fin-income">Rp 0</span>
+              </div>
+              <div class="overview-fin-box">
+                <span class="telemetry-stat-label">Pengeluaran</span>
+                <span class="overview-fin-val mono amount-expense" id="ov-fin-expense">Rp 0</span>
+              </div>
+              <div class="overview-fin-box">
+                <span class="telemetry-stat-label">Saldo Bersih</span>
+                <span class="overview-fin-val mono" id="ov-fin-balance">Rp 0</span>
+              </div>
+            </div>
+            <div class="overview-fin-ratio">
+              <div class="telemetry-bar-head">
+                <span class="text-xs muted">Rasio Pengeluaran terhadap Pemasukan</span>
+                <span class="mono text-xs fw-600" id="ov-fin-ratio-label">0%</span>
+              </div>
+              <div class="budget-bar-track">
+                <div id="ov-fin-ratio-bar" class="budget-bar-fill" style="width: 0%;"></div>
+              </div>
+            </div>
+          </article>
+
           <!-- WhatsApp Bot Widget -->
           <article class="glass-card bento-widget">
             <div class="card-header">
               <div class="card-title-group">
-                <span class="title-icon"><i data-lucide="message-circle" class="icon-18"></i></span>
+                <span class="title-icon accent-green"><i data-lucide="message-circle" class="icon-18"></i></span>
                 <div>
                   <h3>Koneksi WhatsApp Bot</h3>
-                  <p class="muted text-sm">Single-User Whitelist Mode</p>
+                  <p class="muted text-xs">Single-User Whitelist Mode</p>
                 </div>
               </div>
               <span id="wa-status-pill" class="pill pill-muted">Memuat</span>
@@ -326,7 +322,7 @@
         <article class="glass-card bento-widget telemetry-card">
           <div class="card-header">
             <div class="card-title-group">
-              <span class="title-icon"><i data-lucide="activity" class="icon-18"></i></span>
+              <span class="title-icon accent-blue"><i data-lucide="activity" class="icon-18"></i></span>
               <div>
                 <h3>System &amp; AI Telemetry</h3>
                 <p class="muted text-xs" id="telemetry-model-sub">Primary: gemini-3.8-flash • Companion &amp; Fallback: Groq</p>
@@ -352,7 +348,7 @@
                   <span class="mono text-xs" id="tel-gemini-meta">0 / 1500 req (0%) • 0 ms</span>
                 </div>
                 <div class="budget-bar-track">
-                  <div id="tel-gemini-bar" class="budget-bar-fill" style="width: 0%;"></div>
+                  <div id="tel-gemini-bar" class="budget-bar-fill bar-blue" style="width: 0%;"></div>
                 </div>
               </div>
 
@@ -362,7 +358,7 @@
                   <span class="mono text-xs" id="tel-groq-meta">0 / 1000 req (0%) • 0 ms</span>
                 </div>
                 <div class="budget-bar-track">
-                  <div id="tel-groq-bar" class="budget-bar-fill" style="width: 0%;"></div>
+                  <div id="tel-groq-bar" class="budget-bar-fill bar-green" style="width: 0%;"></div>
                 </div>
               </div>
             </div>
@@ -388,6 +384,45 @@
           </div>
 
           <div id="telemetry-test-result" class="telemetry-test-result hidden"></div>
+        </article>
+
+        <!-- Automation & Quick Actions Widget -->
+        <article class="glass-card bento-widget">
+          <div class="card-header">
+            <div class="card-title-group">
+              <span class="title-icon accent-amber"><i data-lucide="zap" class="icon-18"></i></span>
+              <div>
+                <h3>Aksi Cepat &amp; Otomasi</h3>
+                <p class="muted text-xs" id="overview-automation-sub">Briefing 06:00 WIB &amp; Backup Minggu 23:00 WIB</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="quick-actions-grid quick-actions-4">
+            <button id="btn-run-briefing" class="action-tile" type="button">
+              <span class="tile-icon-wrap accent-amber"><i data-lucide="sun" class="icon-18"></i></span>
+              <span class="tile-title">Morning Briefing</span>
+              <span class="tile-desc">Kirim ringkasan jadwal, tugas &amp; momen</span>
+            </button>
+
+            <button id="btn-backup-wa" class="action-tile" type="button">
+              <span class="tile-icon-wrap accent-blue"><i data-lucide="send" class="icon-18"></i></span>
+              <span class="tile-title">Backup ke WhatsApp</span>
+              <span class="tile-desc">Kirim snapshot assistant.db ke chat</span>
+            </button>
+
+            <a href="/api/actions/backup-download" class="action-tile" download>
+              <span class="tile-icon-wrap accent-green"><i data-lucide="hard-drive-download" class="icon-18"></i></span>
+              <span class="tile-title">Unduh Database</span>
+              <span class="tile-desc">Simpan cadangan SQLite ke perangkat</span>
+            </a>
+
+            <button id="btn-refresh-all" class="action-tile" type="button">
+              <span class="tile-icon-wrap accent-purple"><i data-lucide="refresh-cw" class="icon-18"></i></span>
+              <span class="tile-title">Sinkronkan Data</span>
+              <span class="tile-desc">Muat ulang seluruh modul sekarang</span>
+            </button>
+          </div>
         </article>
 
         <!-- Productivity Bento Row: Habit Streak Grid + Focus Timer & Quick Reminders -->
@@ -965,13 +1000,13 @@
         <i data-lucide="check-square" class="icon-18"></i>
         <span>Tugas</span>
       </button>
+      <button class="dock-item" data-tab="memori" type="button">
+        <i data-lucide="heart" class="icon-18"></i>
+        <span>Pacar</span>
+      </button>
       <button class="dock-item" data-tab="catatan" type="button">
         <i data-lucide="book-open" class="icon-18"></i>
         <span>Catatan</span>
-      </button>
-      <button class="dock-item" data-tab="memori" type="button">
-        <i data-lucide="heart" class="icon-18"></i>
-        <span>Memori</span>
       </button>
       <button class="dock-item" data-tab="vault" type="button">
         <i data-lucide="folder-lock" class="icon-18"></i>
