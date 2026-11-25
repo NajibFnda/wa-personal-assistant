@@ -31,9 +31,10 @@ const state = {
   expenseData: null,
   statusData: null,
   notifSettings: null,
-  expenseChart: null,
   statusPollTimer: null,
   eventSource: null,
+  sseConnected: false,
+  renderCache: {},
   authenticated: false,
   pinRequired: false,
   pushSubscribed: false,
@@ -111,10 +112,28 @@ const HARI_BACKUP_LABELS = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
+let iconRenderQueued = false;
 function renderIcons() {
-  if (window.lucide && typeof window.lucide.createIcons === 'function') {
+  if (iconRenderQueued) return;
+  iconRenderQueued = true;
+  requestAnimationFrame(() => {
+    iconRenderQueued = false;
+    if (!window.lucide || typeof window.lucide.createIcons !== 'function') return;
+    if (!document.querySelector('[data-lucide]')) return;
     window.lucide.createIcons({ attrs: { 'stroke-width': 1.8 } });
+  });
+}
+
+function hasSnapshotChanged(cacheKey, payload) {
+  let next = '';
+  try {
+    next = JSON.stringify(payload);
+  } catch {
+    return true;
   }
+  if (state.renderCache[cacheKey] === next) return false;
+  state.renderCache[cacheKey] = next;
+  return true;
 }
 
 function escapeHtml(str) {
@@ -281,6 +300,9 @@ function switchTab(tabName) {
   if (target === 'overview') {
     loadStatus();
     loadTelemetry();
+    loadHabits();
+    loadReminders();
+    loadFocus();
   }
   if (target === 'jadwal') {
     loadJadwal();
@@ -621,7 +643,9 @@ function renderOverview(data) {
   $('#badge-jadwal').textContent = stats.jadwal_aktif;
   $('#badge-tugas').textContent = stats.tugas_aktif;
   if ($('#badge-catatan')) $('#badge-catatan').textContent = stats.catatan_kuliah || 0;
-  requestAnimationFrame(() => updateNavSliders(false));
+  if (hasSnapshotChanged('nav-badges', [stats.jadwal_aktif, stats.tugas_aktif, stats.catatan_kuliah || 0])) {
+    requestAnimationFrame(() => updateNavSliders(false));
+  }
 
   // KPI cards
   $('#kpi-jadwal').textContent = overview.todaySchedules.length;
@@ -681,33 +705,46 @@ function renderOverview(data) {
 
   updateQrModalContent(whatsapp);
 
-  // Readiness chips
-  const chipGemini = $('#chip-gemini');
-  chipGemini.innerHTML = `<i data-lucide="cpu" class="icon-13"></i><span>${escapeHtml(
-    geminiConfigured ? `Gemini (${geminiModel || 'flash'}): Siap` : 'Gemini API Key Belum Diisi'
-  )}</span>`;
-  chipGemini.className = `chip ${geminiConfigured ? 'ok' : 'warn'}`;
+  // Readiness chips (only mutate DOM when status actually changes)
+  if (
+    hasSnapshotChanged('overview-chips', [
+      geminiConfigured,
+      geminiModel,
+      whatsapp.ownerConfigured,
+      whatsapp.ownerMasked,
+      webPushConfigured,
+      stats.push_subscriptions,
+    ])
+  ) {
+    const chipGemini = $('#chip-gemini');
+    chipGemini.innerHTML = `<i data-lucide="cpu" class="icon-13"></i><span>${escapeHtml(
+      geminiConfigured ? `Gemini (${geminiModel || 'flash'}): Siap` : 'Gemini API Key Belum Diisi'
+    )}</span>`;
+    chipGemini.className = `chip ${geminiConfigured ? 'ok' : 'warn'}`;
 
-  const chipOwner = $('#chip-owner');
-  chipOwner.innerHTML = `<i data-lucide="shield-check" class="icon-13"></i><span>${escapeHtml(
-    whatsapp.ownerConfigured ? `Whitelist: ${whatsapp.ownerMasked}` : 'NOMOR_UTAMA Belum Diisi'
-  )}</span>`;
-  chipOwner.className = `chip ${whatsapp.ownerConfigured ? 'ok' : 'warn'}`;
+    const chipOwner = $('#chip-owner');
+    chipOwner.innerHTML = `<i data-lucide="shield-check" class="icon-13"></i><span>${escapeHtml(
+      whatsapp.ownerConfigured ? `Whitelist: ${whatsapp.ownerMasked}` : 'NOMOR_UTAMA Belum Diisi'
+    )}</span>`;
+    chipOwner.className = `chip ${whatsapp.ownerConfigured ? 'ok' : 'warn'}`;
 
-  const chipPush = $('#chip-push');
-  chipPush.innerHTML = `<i data-lucide="bell" class="icon-13"></i><span>${escapeHtml(
-    webPushConfigured ? `Web Push: ${stats.push_subscriptions} perangkat` : 'VAPID Belum Diisi'
-  )}</span>`;
-  chipPush.className = `chip ${webPushConfigured ? 'ok' : 'warn'}`;
+    const chipPush = $('#chip-push');
+    chipPush.innerHTML = `<i data-lucide="bell" class="icon-13"></i><span>${escapeHtml(
+      webPushConfigured ? `Web Push: ${stats.push_subscriptions} perangkat` : 'VAPID Belum Diisi'
+    )}</span>`;
+    chipPush.className = `chip ${webPushConfigured ? 'ok' : 'warn'}`;
+    renderIcons();
+  }
 
   // Today's schedules
-  const schedWrap = $('#overview-schedules');
-  if (!overview.todaySchedules.length) {
-    schedWrap.innerHTML = `<div class="muted text-sm">Tidak ada jadwal kuliah atau presensi hari ini.</div>`;
-  } else {
-    schedWrap.innerHTML = overview.todaySchedules
-      .map(
-        (j) => `
+  if (hasSnapshotChanged('overview-schedules', overview.todaySchedules)) {
+    const schedWrap = $('#overview-schedules');
+    if (!overview.todaySchedules.length) {
+      schedWrap.innerHTML = `<div class="muted text-sm">Tidak ada jadwal kuliah atau presensi hari ini.</div>`;
+    } else {
+      schedWrap.innerHTML = overview.todaySchedules
+        .map(
+          (j) => `
       <div class="mini-item">
         <div>
           <div class="fw-600">${escapeHtml(j.nama)}</div>
@@ -715,16 +752,18 @@ function renderOverview(data) {
         </div>
         <span class="pill pill-blue mono">${escapeHtml(j.jam)} WIB</span>
       </div>`
-      )
-      .join('');
+        )
+        .join('');
+    }
   }
 
   // Urgent tasks & moments
-  const urgentWrap = $('#overview-urgent');
-  const itemsHtml = [];
+  if (hasSnapshotChanged('overview-urgent', [overview.upcomingMoments.slice(0, 2), overview.urgentTasks])) {
+    const urgentWrap = $('#overview-urgent');
+    const itemsHtml = [];
 
-  for (const m of overview.upcomingMoments.slice(0, 2)) {
-    itemsHtml.push(`
+    for (const m of overview.upcomingMoments.slice(0, 2)) {
+      itemsHtml.push(`
       <div class="mini-item">
         <div>
           <div class="fw-600">${escapeHtml(m.judul)}</div>
@@ -732,16 +771,16 @@ function renderOverview(data) {
         </div>
         <span class="pill pill-cyan mono">${m.days_until === 0 ? 'HARI INI' : `H-${m.days_until}`}</span>
       </div>`);
-  }
+    }
 
-  for (const t of overview.urgentTasks) {
-    const pillClass =
-      t.countdown.urgency === 'overdue' || t.countdown.urgency === 'critical'
-        ? 'pill-red'
-        : t.countdown.urgency === 'warning'
-        ? 'pill-amber'
-        : 'pill-green';
-    itemsHtml.push(`
+    for (const t of overview.urgentTasks) {
+      const pillClass =
+        t.countdown.urgency === 'overdue' || t.countdown.urgency === 'critical'
+          ? 'pill-red'
+          : t.countdown.urgency === 'warning'
+          ? 'pill-amber'
+          : 'pill-green';
+      itemsHtml.push(`
       <div class="mini-item">
         <div>
           <div class="fw-600">${escapeHtml(t.judul)}</div>
@@ -749,13 +788,12 @@ function renderOverview(data) {
         </div>
         <span class="pill ${pillClass}">${escapeHtml(t.countdown.label)}</span>
       </div>`);
+    }
+
+    urgentWrap.innerHTML = itemsHtml.length
+      ? itemsHtml.join('')
+      : `<div class="muted text-sm">Aman. Tidak ada tugas mendesak atau momen terdekat.</div>`;
   }
-
-  urgentWrap.innerHTML = itemsHtml.length
-    ? itemsHtml.join('')
-    : `<div class="muted text-sm">Aman. Tidak ada tugas mendesak atau momen terdekat.</div>`;
-
-  renderIcons();
 }
 
 /* ==================== TAB 2: JADWAL ==================== */
@@ -1385,7 +1423,7 @@ function renderVault() {
       } else if (isFile && kind === 'PDF' && previewUrl) {
         stageHtml = `
           <div class="vault-doc-stage" data-preview-vault="${v.id}">
-            <iframe class="vault-pdf-frame" src="${previewUrl}#toolbar=0&navpanes=0&scrollbar=0&page=1" tabindex="-1" title="${escapeHtml(v.kata_kunci)}"></iframe>
+            <iframe class="vault-pdf-frame" loading="lazy" src="${previewUrl}#toolbar=0&navpanes=0&scrollbar=0&page=1" tabindex="-1" title="${escapeHtml(v.kata_kunci)}"></iframe>
             <div class="vault-stage-scrim"></div>
             <div class="vault-wa-doc-bar">
               <span class="vault-wa-doc-icon"><i data-lucide="file-text" class="icon-16"></i></span>
@@ -1971,6 +2009,7 @@ function renderHabits(data) {
   const gridEl = $('#habit-streak-grid');
   const listEl = $('#habit-list');
   if (!gridEl || !listEl) return;
+  if (!hasSnapshotChanged('habits', data)) return;
 
   const summary = data?.summary || { totalHabits: 0, doneTodayCount: 0, bestStreak: 0 };
   if (sub) {
@@ -2064,6 +2103,7 @@ async function loadFocus() {
 }
 
 function renderFocus(data) {
+  if (!hasSnapshotChanged('focus', { active: data?.active || null, stats: data?.stats || null })) return;
   if (state.focusTickTimer) {
     clearInterval(state.focusTickTimer);
     state.focusTickTimer = null;
@@ -2128,6 +2168,7 @@ async function loadReminders() {
 function renderReminders(list) {
   const wrap = $('#reminder-list');
   if (!wrap) return;
+  if (!hasSnapshotChanged('reminders', list)) return;
   if (!list || !list.length) {
     wrap.innerHTML = '<div class="text-xs muted">Belum ada pengingat cepat aktif. Bisa juga lewat WA: <code>/r 30m angkat jemuran</code>.</div>';
     return;
@@ -3521,6 +3562,7 @@ function renderAuditLogs(data) {
 
 /* ==================== REAL-TIME SSE LIVE SYNC ==================== */
 function disconnectLiveEvents() {
+  state.sseConnected = false;
   if (state.eventSource) {
     try {
       state.eventSource.close();
@@ -3537,6 +3579,16 @@ function connectLiveEvents() {
 
   const es = new EventSource('/api/events');
   state.eventSource = es;
+
+  es.addEventListener('open', () => {
+    state.sseConnected = true;
+  });
+  es.addEventListener('connected', () => {
+    state.sseConnected = true;
+  });
+  es.addEventListener('error', () => {
+    state.sseConnected = false;
+  });
 
   es.addEventListener('data-updated', (ev) => {
     try {
@@ -3585,27 +3637,29 @@ function connectLiveEvents() {
   });
 }
 
-function refreshActiveTab() {
-  loadStatus();
+async function refreshActiveTab() {
+  const jobs = [loadStatus()];
   if (state.activeTab === 'overview') {
-    loadTelemetry();
-    loadHabits();
-    loadReminders();
-    loadFocus();
+    jobs.push(loadTelemetry(), loadHabits(), loadReminders(), loadFocus());
   } else if (state.activeTab === 'jadwal') {
-    loadJadwal();
-    loadCalendarInfo();
-  } else if (state.activeTab === 'tugas') loadTugas();
-  else if (state.activeTab === 'catatan') loadCatatan();
-  else if (state.activeTab === 'memori') {
-    loadMemori();
-    loadWishlist();
-  } else if (state.activeTab === 'vault') loadVault();
-  else if (state.activeTab === 'keuangan') loadPengeluaran();
+    jobs.push(loadJadwal(), loadCalendarInfo());
+  } else if (state.activeTab === 'tugas') {
+    jobs.push(loadTugas());
+  } else if (state.activeTab === 'catatan') {
+    jobs.push(loadCatatan());
+  } else if (state.activeTab === 'memori') {
+    jobs.push(loadMemori(), loadWishlist());
+  } else if (state.activeTab === 'vault') {
+    jobs.push(loadVault());
+  } else if (state.activeTab === 'keuangan') {
+    jobs.push(loadPengeluaran());
+  }
+  await Promise.all(jobs);
 }
 
 /* ==================== BOOTSTRAP ==================== */
 async function refreshAll() {
+  state.renderCache = {};
   await Promise.all([
     loadStatus(),
     loadTelemetry(),
@@ -3625,18 +3679,37 @@ async function refreshAll() {
 
 async function bootDashboard() {
   const initialHash = window.location.hash.replace('#', '');
-  if (initialHash) {
+  if (initialHash && TAB_ORDER.includes(initialHash)) {
     switchTab(initialHash);
+  } else {
+    // Lazy-load ONLY the active tab on initial boot (avoids 13-request burst on startup!)
+    await refreshActiveTab();
   }
-  await refreshAll();
   await initServiceWorker();
   connectLiveEvents();
 
+  // Refresh immediately when returning to the tab from background (bind once)
+  if (!state.visibilityBound) {
+    state.visibilityBound = true;
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && (state.authenticated || !state.pinRequired)) {
+        loadStatus();
+        if (state.activeTab === 'overview') loadTelemetry();
+      }
+    });
+  }
+
+  // Gentle 30s heartbeat (SSE already pushes instant real-time updates on every data change)
   if (state.statusPollTimer) clearInterval(state.statusPollTimer);
   state.statusPollTimer = setInterval(() => {
     if (document.hidden) return;
-    refreshActiveTab();
-  }, 5000);
+    if (state.sseConnected) {
+      loadStatus();
+      if (state.activeTab === 'overview') loadTelemetry();
+    } else {
+      refreshActiveTab();
+    }
+  }, 30000);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
