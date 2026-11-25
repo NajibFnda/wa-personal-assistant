@@ -177,6 +177,20 @@ db.exec(`
     model TEXT DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS presensi_pending (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    jadwal_id INTEGER,
+    nama TEXT NOT NULL,
+    tanggal TEXT NOT NULL,
+    jam_awal TEXT NOT NULL,
+    interval_menit INTEGER DEFAULT 20,
+    next_trigger_at TEXT NOT NULL,
+    repeat_count INTEGER DEFAULT 1,
+    acknowledged INTEGER DEFAULT 0,
+    acknowledged_at TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 // Non-destructive column migrations for existing databases
@@ -187,6 +201,8 @@ function ensureColumn(table, column, definition) {
   }
 }
 
+ensureColumn('jadwal', 'repeat_until_ok', 'INTEGER DEFAULT 1');
+ensureColumn('jadwal', 'repeat_interval_min', 'INTEGER DEFAULT 20');
 ensureColumn('memori_pacar', 'deskripsi', "TEXT DEFAULT ''");
 ensureColumn('momen_wishlist', 'notif_days', "TEXT DEFAULT ''");
 ensureColumn('momen_wishlist', 'notif_jam', "TEXT DEFAULT ''");
@@ -465,7 +481,16 @@ export const jadwalRepo = {
     return db.prepare('SELECT * FROM jadwal WHERE id = ?').get(Number(id));
   },
 
-  create({ nama, hari = null, tanggal = null, jam, is_rutin = 1, aktif = 1 }) {
+  create({
+    nama,
+    hari = null,
+    tanggal = null,
+    jam,
+    is_rutin = 1,
+    aktif = 1,
+    repeat_until_ok,
+    repeat_interval_min = 20,
+  }) {
     const cleanNama = String(nama || '').trim();
     const cleanJam = normalizeJam(jam);
     if (!cleanNama) throw new Error('Nama jadwal wajib diisi.');
@@ -488,12 +513,21 @@ export const jadwalRepo = {
     }
 
     const aktifFlag = aktif === false || Number(aktif) === 0 ? 0 : 1;
+    const defaultRepeat = /\(Snooze\)/i.test(cleanNama) ? 0 : 1;
+    const repeatFlag =
+      repeat_until_ok === undefined || repeat_until_ok === null
+        ? defaultRepeat
+        : repeat_until_ok === false || Number(repeat_until_ok) === 0
+          ? 0
+          : 1;
+    const rawInterval = Number(repeat_interval_min);
+    const intervalMin = Number.isFinite(rawInterval) && rawInterval >= 1 && rawInterval <= 180 ? Math.round(rawInterval) : 20;
 
     const result = db
       .prepare(
-        'INSERT INTO jadwal (nama, hari, tanggal, jam, is_rutin, aktif) VALUES (?, ?, ?, ?, ?, ?)'
+        'INSERT INTO jadwal (nama, hari, tanggal, jam, is_rutin, aktif, repeat_until_ok, repeat_interval_min) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
       )
-      .run(cleanNama, cleanHari, cleanTanggal, cleanJam, rutinFlag, aktifFlag);
+      .run(cleanNama, cleanHari, cleanTanggal, cleanJam, rutinFlag, aktifFlag, repeatFlag, intervalMin);
     return this.getById(result.lastInsertRowid);
   },
 
@@ -520,6 +554,18 @@ export const jadwalRepo = {
           : 1
         : existing.aktif;
 
+    const repeat_until_ok =
+      fields.repeat_until_ok !== undefined
+        ? fields.repeat_until_ok === false || Number(fields.repeat_until_ok) === 0
+          ? 0
+          : 1
+        : existing.repeat_until_ok !== undefined && existing.repeat_until_ok !== null
+          ? Number(existing.repeat_until_ok)
+          : 1;
+
+    const rawInt = fields.repeat_interval_min !== undefined ? Number(fields.repeat_interval_min) : Number(existing.repeat_interval_min);
+    const repeat_interval_min = Number.isFinite(rawInt) && rawInt >= 1 && rawInt <= 180 ? Math.round(rawInt) : 20;
+
     let hari = fields.hari !== undefined ? normalizeHari(fields.hari) : existing.hari;
     let tanggal = fields.tanggal !== undefined ? normalizeDateStr(fields.tanggal) : existing.tanggal;
 
@@ -532,8 +578,8 @@ export const jadwalRepo = {
     }
 
     db.prepare(
-      'UPDATE jadwal SET nama = ?, hari = ?, tanggal = ?, jam = ?, is_rutin = ?, aktif = ? WHERE id = ?'
-    ).run(nama, hari, tanggal, jam, is_rutin, aktif, Number(id));
+      'UPDATE jadwal SET nama = ?, hari = ?, tanggal = ?, jam = ?, is_rutin = ?, aktif = ?, repeat_until_ok = ?, repeat_interval_min = ? WHERE id = ?'
+    ).run(nama, hari, tanggal, jam, is_rutin, aktif, repeat_until_ok, repeat_interval_min, Number(id));
     return this.getById(id);
   },
 
@@ -571,6 +617,80 @@ export const jadwalRepo = {
          ORDER BY jam ASC`
       )
       .all(hari, tanggal);
+  },
+};
+
+/* ==================== PRESENSI BERULANG SAMPAI BALAS OK ==================== */
+export const presensiPendingRepo = {
+  listActive() {
+    return db
+      .prepare('SELECT * FROM presensi_pending WHERE acknowledged = 0 ORDER BY next_trigger_at ASC, id ASC')
+      .all();
+  },
+
+  getById(id) {
+    return db.prepare('SELECT * FROM presensi_pending WHERE id = ?').get(Number(id));
+  },
+
+  create({ jadwal_id = null, nama, tanggal, jam_awal, interval_menit = 20, next_trigger_at }) {
+    const cleanNama = String(nama || '').trim();
+    const cleanTanggal = normalizeDateStr(tanggal) || getWibParts().dateStr;
+    const cleanJam = normalizeJam(jam_awal) || getWibParts().timeStr;
+    const cleanNext = normalizeDeadline(next_trigger_at);
+    const interval = Math.max(1, Math.min(180, Math.round(Number(interval_menit) || 20)));
+    if (!cleanNama || !cleanNext) throw new Error('Data pengingat presensi berulang tidak valid.');
+
+    // Prevent duplicate active pending loop for the same schedule on the same day
+    if (jadwal_id) {
+      const existing = db
+        .prepare('SELECT * FROM presensi_pending WHERE jadwal_id = ? AND tanggal = ? AND acknowledged = 0')
+        .get(Number(jadwal_id), cleanTanggal);
+      if (existing) return existing;
+    }
+
+    const res = db
+      .prepare(
+        `INSERT INTO presensi_pending (jadwal_id, nama, tanggal, jam_awal, interval_menit, next_trigger_at, repeat_count, acknowledged)
+         VALUES (?, ?, ?, ?, ?, ?, 1, 0)`
+      )
+      .run(jadwal_id ? Number(jadwal_id) : null, cleanNama, cleanTanggal, cleanJam, interval, cleanNext);
+    return this.getById(res.lastInsertRowid);
+  },
+
+  getDue(nowDateTimeStr) {
+    return db
+      .prepare('SELECT * FROM presensi_pending WHERE acknowledged = 0 AND next_trigger_at <= ? ORDER BY next_trigger_at ASC, id ASC')
+      .all(nowDateTimeStr);
+  },
+
+  bumpRepeat(id, nextTriggerAt, nextCount) {
+    const cleanNext = normalizeDeadline(nextTriggerAt);
+    if (!cleanNext) return null;
+    db.prepare('UPDATE presensi_pending SET next_trigger_at = ?, repeat_count = ? WHERE id = ?').run(
+      cleanNext,
+      Math.max(1, Number(nextCount) || 1),
+      Number(id)
+    );
+    return this.getById(id);
+  },
+
+  acknowledgeById(id, ackAt = getWibParts().dateTimeStr) {
+    const existing = this.getById(id);
+    if (!existing || existing.acknowledged) return null;
+    db.prepare('UPDATE presensi_pending SET acknowledged = 1, acknowledged_at = ? WHERE id = ?').run(
+      String(ackAt || ''),
+      Number(id)
+    );
+    return this.getById(id);
+  },
+
+  acknowledgeAll(ackAt = getWibParts().dateTimeStr) {
+    const active = this.listActive();
+    if (!active.length) return [];
+    db.prepare('UPDATE presensi_pending SET acknowledged = 1, acknowledged_at = ? WHERE acknowledged = 0').run(
+      String(ackAt || '')
+    );
+    return active;
   },
 };
 

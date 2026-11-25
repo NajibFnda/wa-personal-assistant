@@ -794,6 +794,81 @@ function renderOverview(data) {
       ? itemsHtml.join('')
       : `<div class="muted text-sm">Aman. Tidak ada tugas mendesak atau momen terdekat.</div>`;
   }
+
+  renderPendingPresensiBanner(overview.pendingPresensi || []);
+}
+
+function renderPendingPresensiBanner(list = []) {
+  const box = $('#presensi-pending-banner');
+  if (!box) return;
+  if (!hasSnapshotChanged('pending-presensi', list)) return;
+
+  if (!list.length) {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    return;
+  }
+
+  box.classList.remove('hidden');
+  box.innerHTML = `
+    <div class="card-header compact-head">
+      <div class="card-title-group">
+        <span class="title-icon"><i data-lucide="bell-ring" class="icon-18"></i></span>
+        <div>
+          <h3>Menunggu Konfirmasi Presensi (${list.length})</h3>
+          <p class="muted text-xs">Akan terus diingatkan setiap interval sampai kamu balas "ok" di WhatsApp atau klik OK di sini</p>
+        </div>
+      </div>
+      <button id="btn-ack-all-presensi" class="btn btn-primary btn-sm" type="button">
+        <i data-lucide="check-circle-2" class="icon-14"></i>
+        <span>Sudah Presensi (OK)</span>
+      </button>
+    </div>
+    <div class="list-stack">
+      ${list
+        .map(
+          (p) => `
+        <div class="mini-item">
+          <div>
+            <div class="fw-600">${escapeHtml(p.nama)}</div>
+            <div class="text-xs muted mono">Jadwal ${escapeHtml(p.jam_awal)} WIB • Pengingat ke-${Number(p.repeat_count) || 1} • Berikutnya ${escapeHtml(String(p.next_trigger_at || '').slice(11, 16))} WIB (tiap ${Number(p.interval_menit) || 20}m)</div>
+          </div>
+          <button class="btn btn-secondary btn-sm" type="button" data-ack-presensi="${p.id}">
+            <i data-lucide="check" class="icon-14"></i>
+            <span>OK</span>
+          </button>
+        </div>`
+        )
+        .join('')}
+    </div>
+  `;
+
+  $('#btn-ack-all-presensi')?.addEventListener('click', async () => {
+    try {
+      await api('/api/jadwal/pending/ack', { method: 'POST', body: JSON.stringify({}) });
+      toast('Pengingat presensi berulang dihentikan.', 'success');
+      loadStatus();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+
+  box.querySelectorAll('[data-ack-presensi]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try {
+        await api('/api/jadwal/pending/ack', {
+          method: 'POST',
+          body: JSON.stringify({ id: Number(btn.dataset.ackPresensi) }),
+        });
+        toast('Presensi dikonfirmasi (OK).', 'success');
+        loadStatus();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    });
+  });
+
+  renderIcons();
 }
 
 /* ==================== TAB 2: JADWAL ==================== */
@@ -821,7 +896,14 @@ function renderJadwal() {
     .map(
       (j) => `
     <tr>
-      <td><strong>${escapeHtml(j.nama)}</strong></td>
+      <td>
+        <strong>${escapeHtml(j.nama)}</strong>
+        ${
+          j.repeat_until_ok !== 0 && !/\(Snooze\)/i.test(j.nama || '')
+            ? `<div class="text-xs muted" style="margin-top:3px;">Ulang tiap ${Number(j.repeat_interval_min) || 20} menit sampai balas OK</div>`
+            : ''
+        }
+      </td>
       <td><span class="pill ${j.is_rutin ? 'pill-blue' : 'pill-cyan'}">${j.is_rutin ? 'Rutin' : 'Sekali Jalan'}</span></td>
       <td>${j.is_rutin ? escapeHtml(j.hari || '-') : `${escapeHtml(j.hari || '')}, ${escapeHtml(j.tanggal || '-')}`}</td>
       <td class="mono fw-600">${escapeHtml(j.jam)}</td>
@@ -872,6 +954,8 @@ function renderJadwal() {
       $('#jadwal-hari').value = item.hari || 'Senin';
       $('#jadwal-tanggal').value = item.tanggal || getTodayWibStr();
       $('#jadwal-jam').value = item.jam;
+      if ($('#jadwal-repeat-ok')) $('#jadwal-repeat-ok').checked = item.repeat_until_ok !== 0;
+      if ($('#jadwal-repeat-interval')) $('#jadwal-repeat-interval').value = Number(item.repeat_interval_min) || 20;
       toggleJadwalFields();
       openModal('modal-jadwal');
     });
@@ -2850,6 +2934,8 @@ function bindFormsAndActions() {
     $('#form-jadwal').reset();
     $('#jadwal-id').value = '';
     $('#jadwal-tanggal').value = getTodayWibStr();
+    if ($('#jadwal-repeat-ok')) $('#jadwal-repeat-ok').checked = true;
+    if ($('#jadwal-repeat-interval')) $('#jadwal-repeat-interval').value = 20;
     toggleJadwalFields();
     openModal('modal-jadwal');
   });
@@ -2864,6 +2950,8 @@ function bindFormsAndActions() {
       hari: isRutin ? $('#jadwal-hari').value : null,
       tanggal: isRutin ? null : $('#jadwal-tanggal').value,
       jam: $('#jadwal-jam').value,
+      repeat_until_ok: $('#jadwal-repeat-ok')?.checked ? 1 : 0,
+      repeat_interval_min: Number($('#jadwal-repeat-interval')?.value) || 20,
     };
     try {
       if (id) {

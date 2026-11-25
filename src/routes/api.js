@@ -24,6 +24,7 @@ import {
   jadwalRepo,
   memoriRepo,
   pengeluaranRepo,
+  presensiPendingRepo,
   pushRepo,
   reminderRepo,
   resolveUploadPath,
@@ -229,6 +230,7 @@ router.get('/status', (_req, res) => {
     stats,
     overview: {
       todaySchedules,
+      pendingPresensi: presensiPendingRepo.listActive(),
       urgentTasks: activeTasks.slice(0, 5),
       upcomingMoments: upcomingMoments.slice(0, 5),
       todayExpenseTotal: todayExpense.totalExpense,
@@ -355,6 +357,24 @@ router.get('/actions/backup-download', async (_req, res) => {
 });
 
 /* ==================== MODUL 1: JADWAL ==================== */
+router.get('/jadwal/pending', (_req, res) => {
+  res.json(presensiPendingRepo.listActive());
+});
+
+router.post('/jadwal/pending/ack', (req, res) => {
+  const nowStr = getWibParts().dateTimeStr;
+  const targetId = req.body?.id;
+  if (targetId) {
+    const acked = presensiPendingRepo.acknowledgeById(targetId, nowStr);
+    if (!acked) return res.status(404).json({ error: 'Pengingat presensi aktif tidak ditemukan.' });
+    emitDataChange('jadwal', 'api');
+    return res.json({ ok: true, acknowledged: [acked] });
+  }
+  const ackedAll = presensiPendingRepo.acknowledgeAll(nowStr);
+  emitDataChange('jadwal', 'api');
+  return res.json({ ok: true, acknowledged: ackedAll });
+});
+
 router.get('/jadwal', (req, res) => {
   const data = jadwalRepo.list({
     aktif: req.query.aktif,

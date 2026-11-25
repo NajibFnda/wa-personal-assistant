@@ -9,6 +9,7 @@ import {
   habitRepo,
   jadwalRepo,
   memoriRepo,
+  presensiPendingRepo,
   reminderRepo,
   settingsRepo,
   stateRepo,
@@ -17,6 +18,7 @@ import {
 } from '../config/db.js';
 import {
   WIB_TIMEZONE,
+  addMinutesWib,
   formatCountdown,
   getWibParts,
   parseWibDateTime,
@@ -50,7 +52,12 @@ export async function checkSchedules(now = new Date()) {
     firedScheduleKeys.add(dedupKey);
 
     const tipeLabel = item.is_rutin ? `Rutin setiap ${item.hari}` : `Sekali jalan (${item.tanggal})`;
-    const body = `Waktunya *${item.nama}*!\n🕐 ${item.jam} WIB (${tipeLabel})\n\n_Balas "tunda 10 menit" untuk snooze._`;
+    const shouldRepeat = item.repeat_until_ok !== 0 && !/\(Snooze\)/i.test(item.nama || '');
+    const interval = Math.max(1, Math.min(180, Number(item.repeat_interval_min) || 20));
+
+    const body = shouldRepeat
+      ? `Waktunya presensi *${item.nama}*!\n🕐 ${item.jam} WIB (${tipeLabel})\n\n🔁 _Akan diingatkan berulang tiap *${interval} menit* sampai kamu balas *"ok"*._`
+      : `Waktunya *${item.nama}*!\n🕐 ${item.jam} WIB (${tipeLabel})\n\n_Balas "tunda 10 menit" untuk snooze._`;
 
     await sendDualNotification(`⏰ ${item.nama}`, body, '/#jadwal', {
       recordForSnooze: true,
@@ -58,10 +65,77 @@ export async function checkSchedules(now = new Date()) {
       tag: dedupKey,
     });
 
+    if (shouldRepeat) {
+      const nextTarget = addMinutesWib(interval, now);
+      presensiPendingRepo.create({
+        jadwal_id: item.id,
+        nama: item.nama,
+        tanggal: parts.dateStr,
+        jam_awal: item.jam,
+        interval_menit: interval,
+        next_trigger_at: nextTarget.dateTimeStr,
+      });
+      emitDataChange('jadwal', 'scheduler');
+    }
+
     if (item.is_rutin === 0) {
       jadwalRepo.deactivate(item.id);
       emitDataChange('jadwal', 'scheduler');
     }
+    triggered += 1;
+  }
+
+  return triggered;
+}
+
+const MAX_PRESENSI_REPEATS = 12; // 12 x 20 menit = 4 jam batas aman
+
+/**
+ * Modul 1B: Repeating presensi reminder every 20 minutes until user replies "ok".
+ */
+export async function checkPendingPresensi(now = new Date()) {
+  const parts = getWibParts(now);
+  const dueList = presensiPendingRepo.getDue(parts.dateTimeStr);
+  let triggered = 0;
+
+  for (const row of dueList) {
+    // Auto-close stale items from previous days
+    if (row.tanggal && row.tanggal < parts.dateStr) {
+      presensiPendingRepo.acknowledgeById(row.id, parts.dateTimeStr);
+      emitDataChange('jadwal', 'scheduler');
+      continue;
+    }
+
+    const interval = Math.max(1, Math.min(180, Number(row.interval_menit) || 20));
+    const nextCount = (Number(row.repeat_count) || 1) + 1;
+
+    if (nextCount > MAX_PRESENSI_REPEATS) {
+      presensiPendingRepo.acknowledgeById(row.id, parts.dateTimeStr);
+      await sendDualNotification(
+        `⏰ Pengingat Presensi Berakhir: ${row.nama}`,
+        `Pengingat berulang untuk *${row.nama}* (jadwal ${row.jam_awal} WIB) dihentikan otomatis setelah ${MAX_PRESENSI_REPEATS}x pengingat.`,
+        '/#jadwal',
+        { recordForSnooze: false, tag: `presensi-end-${row.id}` }
+      );
+      emitDataChange('jadwal', 'scheduler');
+      triggered += 1;
+      continue;
+    }
+
+    const nextTarget = addMinutesWib(interval, now);
+    presensiPendingRepo.bumpRepeat(row.id, nextTarget.dateTimeStr, nextCount);
+
+    const body =
+      `Kamu belum konfirmasi presensi *${row.nama}* (jadwal ${row.jam_awal} WIB)!\n` +
+      `🔁 Pengingat ulang ke-${nextCount} (setiap ${interval} menit).\n\n` +
+      `_Balas *"ok"* jika sudah presensi untuk menghentikan pengingat._`;
+
+    await sendDualNotification(`🔔 Pengingat Presensi #${nextCount}: ${row.nama}`, body, '/#jadwal', {
+      recordForSnooze: true,
+      activityName: row.nama,
+      tag: `presensi-repeat-${row.id}-${nextCount}`,
+    });
+    emitDataChange('jadwal', 'scheduler');
     triggered += 1;
   }
 
@@ -348,9 +422,13 @@ export async function runWeeklyBackup(now = new Date()) {
 }
 
 export async function runMinuteTick(now = new Date()) {
-  const [schedules, tasks, moments, reminders, focus, habits] = await Promise.all([
+  const [schedules, presensiRepeats, tasks, moments, reminders, focus, habits] = await Promise.all([
     checkSchedules(now).catch((err) => {
       console.error('[Scheduler] checkSchedules error:', err);
+      return 0;
+    }),
+    checkPendingPresensi(now).catch((err) => {
+      console.error('[Scheduler] checkPendingPresensi error:', err);
       return 0;
     }),
     checkTaskDeadlines(now).catch((err) => {
@@ -374,7 +452,7 @@ export async function runMinuteTick(now = new Date()) {
       return 0;
     }),
   ]);
-  return { schedules, tasks, moments, reminders, focus, habits };
+  return { schedules, presensiRepeats, tasks, moments, reminders, focus, habits };
 }
 
 function scheduleDynamicJobs() {

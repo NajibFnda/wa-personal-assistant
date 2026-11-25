@@ -13,6 +13,7 @@ import {
   normalizeIncomeCategory,
   normalizeRecurrence,
   pengeluaranRepo,
+  presensiPendingRepo,
   reminderRepo,
   resolveUploadPath,
   tugasRepo,
@@ -138,6 +139,7 @@ function buildHelpText() {
     '📅 *Jadwal, Presensi & Snooze*',
     '• `/j` — Lihat jadwal hari ini',
     '• `/j <hari/YYYY-MM-DD> <HH:MM> <nama>`',
+    '• `/ok` _(atau balas `ok`)_ — Hentikan pengingat presensi berulang (tiap 20m)',
     '• `/s <menit>` — Snooze pengingat terakhir',
     '',
     '📝 *Tugas & Deadline*',
@@ -574,10 +576,23 @@ export async function handleSlashCommand({
         jam: target.timeStr,
         is_rutin: 0,
         aktif: 1,
+        repeat_until_ok: 0,
       });
       emitDataChange('jadwal', 'whatsapp');
       return {
         text: `⏰ *Snooze ${menit} menit!*\n*${rec.nama}* akan diingatkan lagi pukul *${rec.jam} WIB* (${rec.tanggal}).`,
+      };
+    }
+
+    case 'ok': {
+      const acked = presensiPendingRepo.acknowledgeAll(nowParts.dateTimeStr);
+      if (!acked.length) {
+        return { text: '✅ Tidak ada pengingat presensi berulang yang sedang aktif saat ini.' };
+      }
+      emitDataChange('jadwal', 'whatsapp');
+      const names = acked.map((a) => `*${a.nama}* (${a.jam_awal} WIB)`).join(', ');
+      return {
+        text: `✅ *Presensi Dikonfirmasi!*\nPengingat berulang untuk ${names} telah dihentikan.`,
       };
     }
 

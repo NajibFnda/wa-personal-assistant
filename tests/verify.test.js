@@ -894,4 +894,85 @@ describe('All-in-One Personal Assistant End-to-End Verification (Isolated Test D
       assert.equal(emojiRe.test(content), false, `Found prohibited emoji in ${rel}`);
     }
   });
+
+  it('10. Repeating Presensi Reminder every 20 minutes until user replies "ok" (WA + API)', async () => {
+    const { jadwalRepo, presensiPendingRepo } = await import('../src/config/db.js');
+    const { checkSchedules, checkPendingPresensi } = await import('../src/services/scheduler.js');
+    const { tryAcknowledgePendingPresensi } = await import('../src/services/whatsapp.js');
+    const { handleSlashCommand } = await import('../src/services/commands.js');
+
+    // Clear any prior pending items from earlier tests
+    presensiPendingRepo.acknowledgeAll('2026-11-25 00:00');
+
+    // Create a routine class schedule on Rabu 12:30 (defaults to repeat_until_ok=1, repeat_interval_min=20)
+    const sched = jadwalRepo.create({
+      nama: 'Presensi Sistem Informasi',
+      hari: 'Rabu',
+      jam: '12:30',
+      is_rutin: 1,
+    });
+    assert.equal(sched.repeat_until_ok, 1);
+    assert.equal(sched.repeat_interval_min, 20);
+
+    // 1. Trigger at 12:30 WIB -> creates pending presensi scheduled for 12:50
+    const t0 = new Date('2026-11-25T12:30:00+07:00');
+    const fired0 = await checkSchedules(t0);
+    assert.ok(fired0 >= 1);
+    const activeAfterStart = presensiPendingRepo.listActive();
+    assert.equal(activeAfterStart.length, 1);
+    assert.equal(activeAfterStart[0].next_trigger_at, '2026-11-25 12:50');
+    assert.equal(activeAfterStart[0].repeat_count, 1);
+
+    // 2. At 12:45 (+15m) -> should NOT fire yet
+    const fired15 = await checkPendingPresensi(new Date('2026-11-25T12:45:00+07:00'));
+    assert.equal(fired15, 0);
+
+    // 3. At 12:50 (+20m) -> fires repeat #2 and reschedules to 13:10
+    const fired20 = await checkPendingPresensi(new Date('2026-11-25T12:50:00+07:00'));
+    assert.equal(fired20, 1);
+    let current = presensiPendingRepo.listActive()[0];
+    assert.equal(current.repeat_count, 2);
+    assert.equal(current.next_trigger_at, '2026-11-25 13:10');
+
+    // 4. At 13:10 (+40m) -> fires repeat #3 and reschedules to 13:30
+    const fired40 = await checkPendingPresensi(new Date('2026-11-25T13:10:00+07:00'));
+    assert.equal(fired40, 1);
+    current = presensiPendingRepo.listActive()[0];
+    assert.equal(current.repeat_count, 3);
+    assert.equal(current.next_trigger_at, '2026-11-25 13:30');
+
+    // 5. User replies "ok" via WhatsApp -> 0ms instant stop
+    const ackReply = tryAcknowledgePendingPresensi('ok', new Date('2026-11-25T13:12:00+07:00'));
+    assert.ok(ackReply && /Presensi Dikonfirmasi/.test(ackReply.text));
+    assert.equal(presensiPendingRepo.listActive().length, 0);
+
+    // 6. At 13:30 -> completely silent (0 fired)
+    const fired60 = await checkPendingPresensi(new Date('2026-11-25T13:30:00+07:00'));
+    assert.equal(fired60, 0);
+
+    // 7. Replying "ok" when nothing is pending returns null (does not hijack normal chat)
+    assert.equal(tryAcknowledgePendingPresensi('ok', new Date('2026-11-25T13:35:00+07:00')), null);
+
+    // 8. Also test API /api/jadwal/pending & /api/jadwal/pending/ack + /ok slash command
+    presensiPendingRepo.create({
+      jadwal_id: sched.id,
+      nama: sched.nama,
+      tanggal: '2026-11-25',
+      jam_awal: '12:30',
+      interval_menit: 20,
+      next_trigger_at: '2026-11-25 14:00',
+    });
+    const pendingApi = await (await fetch(`${baseUrl}/api/jadwal/pending`)).json();
+    assert.equal(pendingApi.length, 1);
+    const ackApi = await fetch(`${baseUrl}/api/jadwal/pending/ack`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    assert.equal(ackApi.status, 200);
+    assert.equal(presensiPendingRepo.listActive().length, 0);
+
+    const slashOk = await handleSlashCommand({ text: '/ok', now: new Date('2026-11-25T14:05:00+07:00') });
+    assert.match(slashOk.text, /Tidak ada pengingat presensi/);
+  });
 });

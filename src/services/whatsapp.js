@@ -18,6 +18,7 @@ import {
   jadwalRepo,
   memoriRepo,
   pengeluaranRepo,
+  presensiPendingRepo,
   reminderRepo,
   resolveUploadPath,
   tugasRepo,
@@ -461,6 +462,7 @@ export async function executeIntent({
         jam: target.timeStr,
         is_rutin: 0,
         aktif: 1,
+        repeat_until_ok: 0,
       });
 
       emitDataChange('jadwal', 'whatsapp');
@@ -1128,6 +1130,29 @@ export async function executeIntent({
   }
 }
 
+const PRESENSI_OK_RE =
+  /^(?:ok|oke|okey|okay|sip|siap|udah|sudah|done|beres|aman|acc|(?:udah|sudah|ok|oke)\s+(?:presensi|absen))[.!\s👍✅👌]*$/i;
+
+/**
+ * 0ms instant acknowledgment for repeating presensi reminders when user replies "ok".
+ * Only intercepts when at least one pending presensi loop is active.
+ */
+export function tryAcknowledgePendingPresensi(text, now = new Date()) {
+  const clean = String(text || '').trim();
+  if (!clean || !PRESENSI_OK_RE.test(clean)) return null;
+
+  const active = presensiPendingRepo.listActive();
+  if (!active.length) return null;
+
+  const acked = presensiPendingRepo.acknowledgeAll(getWibParts(now).dateTimeStr);
+  emitDataChange('jadwal', 'whatsapp');
+
+  const names = acked.map((a) => `*${a.nama}* (${a.jam_awal} WIB)`).join(', ');
+  return {
+    text: `✅ *Presensi Dikonfirmasi!*\nPengingat berulang untuk ${names} sudah dihentikan. Semangat kuliahnya!`,
+  };
+}
+
 async function processAllowedMessage(rawMsg) {
   const extracted = extractMessagePayload(rawMsg);
   if (!extracted) return;
@@ -1163,6 +1188,11 @@ async function processAllowedMessage(rawMsg) {
 
     if (outcome?.skipReply) {
       return;
+    }
+
+    // 0ms Instant "ok" acknowledgment for active repeating presensi reminders
+    if (!outcome && !extracted.mediaType) {
+      outcome = tryAcknowledgePendingPresensi(extracted.text);
     }
 
     if (!outcome) {
