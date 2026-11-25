@@ -1,5 +1,5 @@
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
-import { normalizeCategory, normalizeIncomeCategory } from '../config/db.js';
+import { aiLogRepo, normalizeCategory, normalizeIncomeCategory } from '../config/db.js';
 import {
   HARI_ID,
   getWibParts,
@@ -9,10 +9,12 @@ import {
   shiftDateStr,
 } from '../utils/time.js';
 
+export const PRIMARY_GEMINI_MODEL = 'gemini-3.8-flash';
+
 const DEFAULT_MODEL_CHAIN = [
+  { model: 'gemini-3.8-flash', thinkingLevel: ThinkingLevel.LOW },
   { model: 'gemini-3.1-flash-lite', thinkingLevel: ThinkingLevel.MINIMAL },
   { model: 'gemini-3.5-flash-lite', thinkingLevel: ThinkingLevel.MINIMAL },
-  { model: 'gemini-3.8-flash', thinkingLevel: ThinkingLevel.LOW },
   { model: 'gemini-3.6-flash', thinkingLevel: ThinkingLevel.LOW },
   { model: 'gemini-3.5-flash', thinkingLevel: ThinkingLevel.LOW },
 ];
@@ -94,14 +96,23 @@ function isRetryableModelError(err) {
   return false;
 }
 
+function safeRecordAiLog({ provider, status, latency_ms = 0, model = '' }) {
+  try {
+    aiLogRepo.record({ provider, status, latency_ms, model });
+  } catch {
+    // Telemetry logging must never interrupt AI responses
+  }
+}
+
 /**
  * Hedged parallel model execution:
  * Starts the fastest available model immediately; if it hasn't responded within HEDGE_DELAY_MS (1.8s),
  * fires the second model in parallel and resolves with whichever finishes first, aborting the slower one.
  */
-async function generateWithFallback(client, buildRequest) {
+async function generateWithFallback(client, buildRequest, { isFallback = false } = {}) {
   const chain = getModelChain();
   const nowMs = Date.now();
+  const t0 = Date.now();
 
   const available = chain.filter((e) => (modelCooldownUntil.get(e.model) || 0) <= nowMs);
   const inCooldown = chain.filter((e) => (modelCooldownUntil.get(e.model) || 0) > nowMs);
@@ -115,7 +126,7 @@ async function generateWithFallback(client, buildRequest) {
       : timeoutSignal;
 
     req.config = {
-      maxOutputTokens: 500,
+      maxOutputTokens: 900,
       ...(req.config || {}),
       ...(entry.thinkingLevel
         ? { thinkingConfig: { thinkingLevel: entry.thinkingLevel } }
@@ -127,7 +138,7 @@ async function generateWithFallback(client, buildRequest) {
       const response = await client.models.generateContent(req);
       modelCooldownUntil.delete(entry.model);
       lastUsedModel = entry.model;
-      return response;
+      return { response, model: entry.model };
     } catch (err) {
       if (!externalController?.signal.aborted && isRetryableModelError(err)) {
         modelCooldownUntil.set(entry.model, Date.now() + getCooldownDuration(err));
@@ -177,18 +188,34 @@ async function generateWithFallback(client, buildRequest) {
     }
   };
 
+  const logSuccess = (outcome) => {
+    safeRecordAiLog({
+      provider: 'GEMINI',
+      status: isFallback ? 'FALLBACK' : 'SUCCESS',
+      latency_ms: Date.now() - t0,
+      model: outcome.model,
+    });
+    return outcome.response;
+  };
+
   // Round 1: Race top 2 healthy models with 1.8s hedge delay
   if (order.length >= 2) {
     try {
-      return await racePair(order[0], order[1]);
+      return logSuccess(await racePair(order[0], order[1]));
     } catch {
-      // Transient 503 spikes on both Flash Lite models are very brief (~1s); retry top 2 Lite models once!
+      // Transient 503 spikes on Flash models are very brief (~1s); retry top 2 models once
       await delay(900);
       try {
-        return await racePair(chain[0], chain[1]);
+        return logSuccess(await racePair(chain[0], chain[1]));
       } catch {
         // Proceed to remaining models
       }
+    }
+  } else if (order.length === 1) {
+    try {
+      return logSuccess(await callSingleModel(order[0], null));
+    } catch {
+      // fall through
     }
   }
 
@@ -197,7 +224,7 @@ async function generateWithFallback(client, buildRequest) {
   if (rest.length > 0) {
     const controllers = rest.map(() => new AbortController());
     try {
-      return await Promise.any(
+      const winner = await Promise.any(
         rest.map((entry, idx) =>
           callSingleModel(entry, controllers[idx]).then((res) => {
             controllers.forEach((c, j) => {
@@ -207,12 +234,20 @@ async function generateWithFallback(client, buildRequest) {
           })
         )
       );
+      return logSuccess(winner);
     } catch {
       // all fallback models failed
     }
   }
 
-  throw new Error('Server AI Google sedang padat atau lambat merespons. Silakan coba kirim ulang sebentar lagi (atau gunakan slash command seperti /t, /p, /v, /k).');
+  safeRecordAiLog({
+    provider: 'GEMINI',
+    status: 'ERROR',
+    latency_ms: Date.now() - t0,
+    model: chain[0]?.model || PRIMARY_GEMINI_MODEL,
+  });
+
+  throw new Error('Server AI Google sedang padat atau lambat merespons. Silakan coba kirim ulang sebentar lagi (atau gunakan slash command seperti /t, /p, /v, /k, /n).');
 }
 
 function resolveRelativeIndonesianDate(text, now = new Date()) {
@@ -250,6 +285,21 @@ function resolveRelativeIndonesianDate(text, now = new Date()) {
   return null;
 }
 
+function extractBudgetFromText(str) {
+  const m = String(str || '').match(
+    /(?:di\s*bawah|under|maks(?:imal)?|max|budget|anggaran|sekitar|kurang\s+dari)?\s*(?:rp\.?\s*)?(\d+(?:[.,]\d+)?)\s*(rb|ribu|k|jt|juta)\b/i
+  );
+  if (!m) return null;
+  const num = Number(String(m[1]).replace(',', '.'));
+  const unit = String(m[2] || '').toLowerCase();
+  if (!Number.isFinite(num) || num <= 0) return null;
+  let mult = 1;
+  if (unit === 'rb' || unit === 'ribu' || unit === 'k') mult = 1000;
+  else if (unit === 'jt' || unit === 'juta') mult = 1000000;
+  const val = Math.round(num * mult);
+  return val >= 5000 ? val : null;
+}
+
 /**
  * 0ms Local Fast-Path Classifier for unambiguous commands.
  * Bypasses LLM network latency completely for common deterministic patterns.
@@ -261,7 +311,7 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
   // 1. Explicit Vault Save with user-supplied title (fast-path 0ms)
   // Note: If user writes only "simpan ini" (without a title) or 'simpan ini "..."' (without a title),
   // we intentionally return null so Gemini AI proactively invents a smart descriptive title!
-  const isOtherModuleHint = /\b(jadwal|presensi|krs|tugas|deadline|struk|pengeluaran|memori|pacar|wishlist|ultah|anniversary|momen)\b/i.test(
+  const isOtherModuleHint = /\b(jadwal|presensi|krs|tugas|deadline|struk|pengeluaran|memori|pacar|wishlist|ultah|anniversary|momen|catatan\s+kuliah|catatan\s+ide|kuliah|rangkum|ringkas|kado|hadiah|kencan|weekend)\b/i.test(
     clean
   );
 
@@ -363,7 +413,7 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
   );
   if (
     vaultGetMatch &&
-    !/\b(tugas|deadline|jadwal|presensi|memori|cerita|pacar|aktivitas|kegiatan|dia|doi|riwayat|history|pengeluaran|jajan|biaya|rekap|wishlist|momen|kemarin|lalu)\b/i.test(
+    !/\b(tugas|deadline|jadwal|presensi|memori|cerita|pacar|aktivitas|kegiatan|dia|doi|riwayat|history|pengeluaran|jajan|biaya|rekap|wishlist|momen|kemarin|lalu|catatan|kuliah|materi|rangkum|ringkas|kado|hadiah|kencan|date|weekend|budget|rekomendasi)\b/i.test(
       clean
     )
   ) {
@@ -425,19 +475,56 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
     };
   }
 
-  // 4D. Partner Gift / Date Ideas & Monthly Recap ("ide kado buat dia", "rekomendasi kado pacar", "ide date", "rekap memori bulan ini")
-  if (
-    /\b(ide|saran|rekomendasi|kasih\s+ide)\s+(?:kado|hadiah|kejutan|gift|date|kencan|jalan|nonton|makan)\b/i.test(clean) ||
-    /\b(rekap|rangkum(?:an)?)\s+(?:memori|cerita|kenangan|aktivitas)\s+(?:pacar|dia|bulan\s+ini)\b/i.test(clean)
-  ) {
-    const isRecap = /\b(rekap|rangkum)\b/i.test(clean);
+  // 4D. Partner Smart Date & Gift Recommendations / Monthly Recap
+  if (/\b(rekap|rangkum(?:an)?)\s+(?:memori|cerita|kenangan|aktivitas)\s+(?:pacar|dia|bulan\s+ini)\b/i.test(clean)) {
     return {
       intent: 'IDE_PACAR',
-      reply_message: isRecap ? 'Menyusun rekap memori bulanan pacarmu...' : 'Menyiapkan rekomendasi personal buat pacarmu...',
+      reply_message: 'Menyusun rekap memori bulanan pacarmu...',
       payload: {
-        kata_kunci: isRecap ? 'REKAP' : clean,
+        kata_kunci: 'REKAP',
       },
     };
+  }
+
+  if (
+    /\b(ide|saran|rekomendasi|kasih\s+(?:ide|rekomendasi|saran))\s+(?:kado|hadiah|kejutan|gift|date|kencan|jalan|nonton|makan|tempat\s+(?:kencan|date|jalan|makan))\b/i.test(
+      clean
+    ) ||
+    /(?:weekend|akhir\s+pekan|libur|malam\s+minggu|besok).*(?:ngajak|ajak|kencan|date|jalan|hangout).*(?:dia|pacar|doi)/i.test(
+      clean
+    ) ||
+    /(?:enaknya|bagusnya|mending)\s+(?:ngajak|ajak)\s+(?:dia|pacar|doi)\s+(?:ke\s*mana|ngapain)/i.test(clean)
+  ) {
+    const budget = extractBudgetFromText(clean);
+    return {
+      intent: 'REKOMENDASI_PACAR',
+      reply_message: 'Menyiapkan rekomendasi personal buat pacarmu...',
+      payload: {
+        kata_kunci: clean,
+        ...(budget ? { budget } : {}),
+      },
+    };
+  }
+
+  // 4E. Search / List Study & Project Notes ("cari catatan kuliah Kriptografi tentang enkripsi", "lihat catatan kuliah", "cek semua catatan")
+  if (!/\b(pacar|dia|doi|memori)\b/i.test(clean)) {
+    if (/^(?:cek|lih?at|daftar|list|buka|tampil(?:in|kan)?)\s+(?:semua\s+)?catatan(?:\s+(?:kuliah|ide|materi|proyek))?\??$/i.test(clean)) {
+      return {
+        intent: 'CARI_CATATAN',
+        reply_message: 'Membuka daftar catatan kuliah & ide...',
+        payload: { kata_kunci: 'SEMUA' },
+      };
+    }
+    const noteSearchMatch = clean.match(
+      /^(?:tolong\s+)?(?:cari(?:in|kan)?|cek|lih?at|buka|minta|tampil(?:in|kan)?)\s+catatan(?:\s+(?:kuliah|materi|ide|proyek))?\s+(.+?)\??$/i
+    );
+    if (noteSearchMatch && noteSearchMatch[1].trim()) {
+      return {
+        intent: 'CARI_CATATAN',
+        reply_message: 'Mencari di catatan kuliah & ide...',
+        payload: { kata_kunci: noteSearchMatch[1].trim() },
+      };
+    }
   }
 
   // 5. Check Tasks ("cek tugas", "lihat tugas", "daftar tugas", "ada tugas apa aja?")
@@ -484,7 +571,7 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
 
   // 5D. Search Partner Memory with explicit topic ("cari memori matcha", "cek aktivitas pacar kemarin", "cek memori pacar sakit")
   const memSearchMatch = clean.match(
-    /^(?:cari|cek|lih?at)\s+(?:aktivitas|kegiatan|memori|catatan|cerita)\s+(?:pacar|dia|doi)?\s*(.+?)\??$/i
+    /^(?:cari|cek|lih?at)\s+(?:(?:aktivitas|kegiatan|memori|cerita)\s+(?:pacar|dia|doi)?|catatan\s+(?:pacar|dia|doi))\s*(.+?)\??$/i
   );
   if (memSearchMatch && !/\b(wishlist|momen|ultah|ulang\s+tahun|anniversary|jadian)\b/i.test(clean)) {
     const queryText = memSearchMatch[1].trim();
@@ -702,7 +789,7 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
 
   // 9. Simple Expense List ("Makan siang 18rb, bensin 25rb, kopi 20k", "beli nasi goreng 15000")
   if (
-    !/\b(jam|pukul|besok|lusa|senin|selasa|rabu|kamis|jum'?at|sabtu|minggu|ahad|tugas|jadwal|ingetin|ingatkan|pacar\w*|doi|dia|lahir|ultah|ulang\s+tahun|anniv\w*|jadian|momen|wishlist|tanggal|tgl|tahun|januari|februari|maret|april|mei|juni|juli|agustus|september|oktober|november|desember|pemasukan|income|masuk|dapat|dapet|terima|diterima|gaji|beasiswa|uang\s+saku|kiriman|transfer\s+ortu|bonus|thr|cashback)\b/i.test(
+    !/\b(jam|pukul|besok|lusa|senin|selasa|rabu|kamis|jum'?at|sabtu|minggu|ahad|tugas|jadwal|ingetin|ingatkan|pacar\w*|doi|dia|lahir|ultah|ulang\s+tahun|anniv\w*|jadian|momen|wishlist|tanggal|tgl|tahun|januari|februari|maret|april|mei|juni|juli|agustus|september|oktober|november|desember|pemasukan|income|masuk|dapat|dapet|terima|diterima|gaji|beasiswa|uang\s+saku|kiriman|transfer\s+ortu|bonus|thr|cashback|kado|hadiah|budget|catatan|kuliah|rangkum|ringkas|rekomendasi|weekend)\b/i.test(
       clean
     )
   ) {
@@ -772,11 +859,14 @@ export const INTENTS = [
   'SIMPAN_MEMORI',
   'CARI_MEMORI',
   'IDE_PACAR',
+  'REKOMENDASI_PACAR',
   'TAMBAH_WISHLIST_MOMEN',
   'CEK_WISHLIST_MOMEN',
   'SIMPAN_VAULT',
   'CARI_VAULT',
   'UBAH_VAULT',
+  'SIMPAN_CATATAN',
+  'CARI_CATATAN',
   'CATAT_PENGELUARAN',
   'CATAT_PEMASUKAN',
   'REKAP_PENGELUARAN',
@@ -800,8 +890,11 @@ const RESPONSE_SCHEMA = {
     payload: {
       type: Type.OBJECT,
       properties: {
-        judul: { type: Type.STRING, description: 'Nama jadwal, judul tugas, atau judul wishlist/momen.' },
-        matkul: { type: Type.STRING, description: 'Nama mata kuliah terkait tugas/jadwal.' },
+        judul: { type: Type.STRING, description: 'Nama jadwal, judul tugas, judul catatan kuliah/ide, atau judul wishlist/momen.' },
+        matkul: { type: Type.STRING, description: 'Nama mata kuliah terkait tugas/jadwal/catatan.' },
+        kategori: { type: Type.STRING, description: 'Kategori atau nama mata kuliah untuk SIMPAN_CATATAN / CARI_CATATAN (contoh: Kriptografi, Ide Proyek, Umum).' },
+        ringkasan: { type: Type.STRING, description: 'Ringkasan terstruktur dalam format bullet points (- Poin 1\\n- Poin 2) untuk SIMPAN_CATATAN.' },
+        budget: { type: Type.INTEGER, description: 'Batas anggaran dalam Rupiah (integer) untuk REKOMENDASI_PACAR jika disebut (misal 200rb -> 200000).' },
         hari: { type: Type.STRING, description: 'Nama hari Indonesia: Senin, Selasa, Rabu, Kamis, Jumat, Sabtu, Minggu.' },
         tanggal: { type: Type.STRING, description: 'Tanggal format YYYY-MM-DD.' },
         tanggal_mulai: { type: Type.STRING, description: 'Tanggal awal rentang query format YYYY-MM-DD.' },
@@ -909,6 +1002,10 @@ function getClient() {
   return aiClient;
 }
 
+export function isGeminiApiConfigured() {
+  return Boolean(getClient());
+}
+
 export function isGeminiConfigured() {
   return Boolean(getClient() || getGroqApiKey());
 }
@@ -919,8 +1016,11 @@ FORMAT OUTPUT JSON WAJIB (hanya keluarkan 1 objek JSON valid tanpa teks tambahan
   "intent": salah satu dari [${INTENTS.map((i) => `"${i}"`).join(', ')}],
   "reply_message": "Balasan singkat & natural bahasa Indonesia",
   "payload": {
-    "judul": "string (nama jadwal/tugas/wishlist/momen)",
+    "judul": "string (nama jadwal/tugas/catatan kuliah/wishlist/momen)",
     "matkul": "string (nama matkul jika relevan)",
+    "kategori": "string (mata kuliah atau 'Ide Proyek'/'Umum' khusus SIMPAN_CATATAN/CARI_CATATAN)",
+    "ringkasan": "string (poin-poin terstruktur format '- Poin 1\\n- Poin 2' khusus SIMPAN_CATATAN)",
+    "budget": integer_rupiah_opsional_khusus_REKOMENDASI_PACAR,
     "hari": "Senin|Selasa|Rabu|Kamis|Jumat|Sabtu|Minggu (jika relevan)",
     "tanggal": "YYYY-MM-DD (jika relevan)",
     "tanggal_mulai": "YYYY-MM-DD (untuk rentang query)",
@@ -938,7 +1038,7 @@ FORMAT OUTPUT JSON WAJIB (hanya keluarkan 1 objek JSON valid tanpa teks tambahan
     "tasks": [{ "judul": "string", "matkul": "string", "tanggal": "YYYY-MM-DD", "jam": "HH:MM" }]
   }
 }
-Sertakan hanya field payload yang relevan (selalu isi kata_kunci & isi_catatan untuk SIMPAN_VAULT).`;
+Sertakan hanya field payload yang relevan (selalu isi kata_kunci & isi_catatan untuk SIMPAN_VAULT; selalu isi judul, kategori & ringkasan bullet points untuk SIMPAN_CATATAN).`;
 
 function parseJsonIntentResult(rawText, providerLabel = 'AI') {
   const trimmed = String(rawText || '').trim();
@@ -970,12 +1070,14 @@ async function callGroqChat({
   jsonMode = true,
   temperature = 0.2,
   maxTokens = 650,
+  isFallback = false,
 }) {
   const apiKey = getGroqApiKey();
   if (!apiKey) {
     throw new Error('GROQ_API_KEY belum dikonfigurasi.');
   }
 
+  const t0 = Date.now();
   const nowMs = Date.now();
   const available = chain.filter((e) => (modelCooldownUntil.get(`groq:${e.model}`) || 0) <= nowMs);
   const inCooldown = chain.filter((e) => (modelCooldownUntil.get(`groq:${e.model}`) || 0) > nowMs);
@@ -1018,6 +1120,12 @@ async function callGroqChat({
 
       modelCooldownUntil.delete(cooldownKey);
       lastUsedModel = cooldownKey;
+      safeRecordAiLog({
+        provider: 'GROQ',
+        status: isFallback ? 'FALLBACK' : 'SUCCESS',
+        latency_ms: Date.now() - t0,
+        model: entry.model,
+      });
       return content;
     } catch (err) {
       lastErr = err;
@@ -1031,6 +1139,13 @@ async function callGroqChat({
     }
   }
 
+  safeRecordAiLog({
+    provider: 'GROQ',
+    status: 'ERROR',
+    latency_ms: Date.now() - t0,
+    model: order[0]?.model || GROQ_TEXT_CHAIN[0].model,
+  });
+
   throw lastErr || new Error('Semua model Groq sedang sibuk.');
 }
 
@@ -1038,6 +1153,7 @@ async function transcribeAudioWithGroq(mediaBuffer, mimeType, fileName) {
   const apiKey = getGroqApiKey();
   if (!apiKey || !mediaBuffer) return null;
 
+  const t0 = Date.now();
   const cleanMime = (mimeType || 'audio/ogg').split(';')[0].trim().toLowerCase();
   const extMap = {
     'audio/ogg': 'ogg',
@@ -1080,6 +1196,12 @@ async function transcribeAudioWithGroq(mediaBuffer, mimeType, fileName) {
       const transcript = (data?.text || '').trim();
       if (transcript) {
         modelCooldownUntil.delete(cooldownKey);
+        safeRecordAiLog({
+          provider: 'GROQ',
+          status: 'SUCCESS',
+          latency_ms: Date.now() - t0,
+          model,
+        });
         return transcript;
       }
     } catch (err) {
@@ -1087,6 +1209,12 @@ async function transcribeAudioWithGroq(mediaBuffer, mimeType, fileName) {
       if (Number(err?.status) === 401 || Number(err?.status) === 403) break;
     }
   }
+  safeRecordAiLog({
+    provider: 'GROQ',
+    status: 'ERROR',
+    latency_ms: Date.now() - t0,
+    model: GROQ_WHISPER_MODELS[0],
+  });
   return null;
 }
 
@@ -1096,6 +1224,7 @@ async function analyzeWithGroq({
   imageMimeType = null,
   nowParts,
   lastReminder,
+  isFallback = false,
 }) {
   const systemPrompt = `${buildSystemInstruction(nowParts, lastReminder)}\n${GROQ_JSON_SCHEMA_HINT}`;
   const isVision = Boolean(imageBuffer && imageMimeType);
@@ -1120,7 +1249,8 @@ async function analyzeWithGroq({
     chain: isVision ? GROQ_VISION_CHAIN : GROQ_TEXT_CHAIN,
     jsonMode: true,
     temperature: 0.2,
-    maxTokens: 700,
+    maxTokens: 950,
+    isFallback,
   });
 
   return parseJsonIntentResult(rawText, 'Groq');
@@ -1132,6 +1262,7 @@ async function analyzeWithGemini({
   mimeType = null,
   nowParts,
   lastReminder,
+  isFallback = false,
 }) {
   const client = getClient();
   if (!client) {
@@ -1150,16 +1281,20 @@ async function analyzeWithGemini({
   }
   parts.push({ text: promptText });
 
-  const response = await generateWithFallback(client, (model) => ({
-    model,
-    contents: [{ role: 'user', parts }],
-    config: {
-      systemInstruction: buildSystemInstruction(nowParts, lastReminder),
-      responseMimeType: 'application/json',
-      responseSchema: RESPONSE_SCHEMA,
-      temperature: 0.2,
-    },
-  }));
+  const response = await generateWithFallback(
+    client,
+    (model) => ({
+      model,
+      contents: [{ role: 'user', parts }],
+      config: {
+        systemInstruction: buildSystemInstruction(nowParts, lastReminder),
+        responseMimeType: 'application/json',
+        responseSchema: RESPONSE_SCHEMA,
+        temperature: 0.2,
+      },
+    }),
+    { isFallback }
+  );
 
   return parseJsonIntentResult(response.text, 'Gemini');
 }
@@ -1230,10 +1365,17 @@ ATURAN KLASIFIKASI INTENT:
 13. REKAP_PENGELUARAN: Pengguna meminta rekap keuangan, saldo, pemasukan, atau pengeluaran ("Pengeluaran hari ini berapa?", "rekap keuangan bulan ini", "saldo bulan ini berapa?", "rekap jajan minggu ini").
     - Hitung payload.tanggal_mulai dan payload.tanggal_akhir (YYYY-MM-DD) secara tepat berdasarkan ${nowParts.dateStr}.
 14. TAMBAH_REMINDER: Pengingat cepat berbasis durasi ("ingetin 30 menit lagi matiin kompor", "ingatkan 2 jam lagi bayar kos"). Isi payload.menit_tunda (integer menit) & payload.judul (pesan pengingat).
-15. IDE_PACAR: Pengguna meminta ide kado, ide date/kencan, kejutan buat pacar, atau rangkuman/rekap kenangan bulanan pacar. Isi payload.kata_kunci ("REKAP" jika minta rangkuman bulanan, atau konteks permintaan jika minta ide kado/date).
-16. HABIT_CHECKIN: Pengguna melaporkan sudah menyelesaikan habit harian ("udah olahraga hari ini", "habit ngoding selesai"). Isi payload.kata_kunci dengan nama habit.
-17. MULAI_FOKUS: Pengguna ingin memulai sesi fokus / Pomodoro ("mulai fokus 25 menit belajar PCD"). Isi payload.menit_tunda (durasi menit, default 25) & payload.judul (topik fokus).
-18. OBROLAN_BIASA: Sapaan, pertanyaan umum, atau obrolan santai yang tidak masuk kategori di atas.
+15. REKOMENDASI_PACAR: Pengguna meminta rekomendasi tempat kencan/date ("Weekend ini enaknya ngajak dia ke mana?", "Saran tempat nongkrong buat date") atau rekomendasi kado/hadiah buat pacar ("Kasih rekomendasi kado buat dia di bawah 200rb", "Ide hadiah buat ultah pacar").
+    - Isi payload.kata_kunci dengan konteks permintaan user.
+    - Jika disebutkan batas anggaran/budget (misal "di bawah 200rb"), isi payload.budget sebagai integer Rupiah (200000).
+15B. IDE_PACAR: Khusus untuk rangkuman/rekap kenangan bulanan pacar ("rekap memori bulan ini"). Isi payload.kata_kunci = "REKAP".
+16. SIMPAN_CATATAN: Pengguna mengirim Voice Note, foto papan tulis/slide kuliah, atau teks materi/ide untuk dirangkum menjadi Catatan Kuliah atau Ide Proyek (misal "Rangkumin jadi catatan kuliah Kriptografi", "Catat ide proyek aplikasi kasir", atau foto slide/papan tulis dengan caption rangkum/catat).
+    - Isi payload.judul (judul ringkas & jelas), payload.kategori (nama mata kuliah seperti "Kriptografi" atau "Ide Proyek" / "Umum"), dan payload.ringkasan berupa poin-poin terstruktur yang rapi menggunakan format bullet points ("- Poin 1\\n- Poin 2\\n- Poin 3").
+17. CARI_CATATAN: Pengguna ingin mencari atau melihat catatan kuliah/ide yang tersimpan ("Cari catatan kuliah Kriptografi tentang enkripsi", "Lihat catatan kuliah", "Cek catatan ide proyek").
+    - Isi payload.kata_kunci dengan kata kunci pencarian (atau "SEMUA" jika minta daftar semua catatan) dan payload.kategori jika mata kuliah disebut.
+18. HABIT_CHECKIN: Pengguna melaporkan sudah menyelesaikan habit harian ("udah olahraga hari ini", "habit ngoding selesai"). Isi payload.kata_kunci dengan nama habit.
+19. MULAI_FOKUS: Pengguna ingin memulai sesi fokus / Pomodoro ("mulai fokus 25 menit belajar PCD"). Isi payload.menit_tunda (durasi menit, default 25) & payload.judul (topik fokus).
+20. OBROLAN_BIASA: Sapaan, pertanyaan umum, atau obrolan santai yang tidak masuk kategori di atas.
 
 Selalu berikan JSON yang valid dan akurat.`;
 }
@@ -1314,7 +1456,9 @@ export async function analyzeMessage({
 
   // 3A. PDF files: prefer Gemini first (native PDF reading), fallback to Groq text context
   if (isPdf) {
+    let geminiTried = false;
     if (hasGemini) {
+      geminiTried = true;
       try {
         return await analyzeWithGemini({
           promptText,
@@ -1322,6 +1466,7 @@ export async function analyzeMessage({
           mimeType: effectiveMimeType,
           nowParts,
           lastReminder,
+          isFallback: false,
         });
       } catch (err) {
         errors.push(`Gemini: ${err.message}`);
@@ -1333,6 +1478,7 @@ export async function analyzeMessage({
           promptText,
           nowParts,
           lastReminder,
+          isFallback: geminiTried,
         });
       } catch (err) {
         errors.push(`Groq: ${err.message}`);
@@ -1340,11 +1486,13 @@ export async function analyzeMessage({
     }
   } else {
     // 3B. Text, Voice Note (transcribed), Image, or Generic Document:
-    // Prefer Groq first (ultra-fast < 1s), seamlessly fallback to Gemini!
+    // Prefer Groq first (ultra-fast < 1s), seamlessly fallback to Gemini (gemini-3.8-flash)!
     const canUseGroqImage = isImage && effectiveMediaBuffer && effectiveMediaBuffer.length <= 4 * 1024 * 1024;
     const canUseGroqHere = hasGroq && (!effectiveMediaBuffer || canUseGroqImage || !isGeminiSupportedMime(effectiveMimeType));
 
+    let groqTried = false;
     if (canUseGroqHere) {
+      groqTried = true;
       try {
         return await analyzeWithGroq({
           promptText,
@@ -1352,6 +1500,7 @@ export async function analyzeMessage({
           imageMimeType: canUseGroqImage ? effectiveMimeType : null,
           nowParts,
           lastReminder,
+          isFallback: false,
         });
       } catch (err) {
         errors.push(`Groq: ${err.message}`);
@@ -1366,6 +1515,7 @@ export async function analyzeMessage({
           mimeType: effectiveMimeType,
           nowParts,
           lastReminder,
+          isFallback: groqTried,
         });
       } catch (err) {
         errors.push(`Gemini: ${err.message}`);
@@ -1411,7 +1561,9 @@ ATURAN JAWABAN:
   const sysMsg =
     'Kamu adalah asisten pribadi yang hangat, santai, dan akurat dalam bahasa Indonesia. Semua catatan dari Brankas Memori adalah tentang PACAR pengguna ("dia" / "pacarmu"), bukan tentang pengguna sendiri.';
 
+  let groqTried = false;
   if (isGroqConfigured()) {
+    groqTried = true;
     try {
       const answer = await callGroqChat({
         messages: [
@@ -1422,6 +1574,7 @@ ATURAN JAWABAN:
         jsonMode: false,
         temperature: 0.3,
         maxTokens: 350,
+        isFallback: false,
       });
       if (answer) return answer;
     } catch {
@@ -1435,14 +1588,18 @@ ATURAN JAWABAN:
   }
 
   try {
-    const response = await generateWithFallback(client, (model) => ({
-      model,
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      config: {
-        systemInstruction: sysMsg,
-        temperature: 0.3,
-      },
-    }));
+    const response = await generateWithFallback(
+      client,
+      (model) => ({
+        model,
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        config: {
+          systemInstruction: sysMsg,
+          temperature: 0.3,
+        },
+      }),
+      { isFallback: groqTried }
+    );
     return (response.text || '').trim() || `Berikut catatan memori pacarmu yang ditemukan:\n${formattedRows}`;
   } catch {
     return `Berikut catatan memori pacarmu yang ditemukan:\n${formattedRows}`;
@@ -1452,8 +1609,10 @@ ATURAN JAWABAN:
 /**
  * Helper to generate natural text via Groq (primary) -> Gemini (fallback).
  */
-async function generateFreeformText(systemPrompt, userPrompt, fallbackText, maxTokens = 550) {
+async function generateFreeformText(systemPrompt, userPrompt, fallbackText, maxTokens = 650) {
+  let groqTried = false;
   if (isGroqConfigured()) {
+    groqTried = true;
     try {
       const text = await callGroqChat({
         messages: [
@@ -1464,6 +1623,7 @@ async function generateFreeformText(systemPrompt, userPrompt, fallbackText, maxT
         jsonMode: false,
         temperature: 0.55,
         maxTokens,
+        isFallback: false,
       });
       if (text) return text;
     } catch {
@@ -1474,15 +1634,19 @@ async function generateFreeformText(systemPrompt, userPrompt, fallbackText, maxT
   const client = getClient();
   if (client) {
     try {
-      const response = await generateWithFallback(client, (model) => ({
-        model,
-        contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-        config: {
-          systemInstruction: systemPrompt,
-          temperature: 0.55,
-          maxOutputTokens: maxTokens,
-        },
-      }));
+      const response = await generateWithFallback(
+        client,
+        (model) => ({
+          model,
+          contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+          config: {
+            systemInstruction: systemPrompt,
+            temperature: 0.55,
+            maxOutputTokens: maxTokens,
+          },
+        }),
+        { isFallback: groqTried }
+      );
       const out = (response.text || '').trim();
       if (out) return out;
     } catch {
@@ -1555,4 +1719,259 @@ Susun rekap hangat berisi:
 
   const fallback = `💝 *Rekap Memori Pacar (${memories.length} catatan terbaru):*\n${memLines}`;
   return generateFreeformText(sysMsg, prompt, fallback, 550);
+}
+
+/**
+ * FITUR 3: Smart Date & Gift Planner (REKOMENDASI_PACAR)
+ * Uses latest 15 rows from memori_pacar + all unfulfilled (terpenuhi = 0) rows from momen_wishlist.
+ */
+export async function generatePartnerRecommendation(
+  {
+    prompt = '',
+    mode = 'auto', // 'date' | 'gift' | 'auto'
+    budget = null,
+    memories = [],
+    wishlists = [],
+    moments = [],
+    noEmoji = false,
+  } = {},
+  now = new Date()
+) {
+  const nowParts = getWibParts(now);
+  const latestMemories = memories.slice(0, 15);
+  const unfulfilledWish = wishlists.filter((w) => !w.terpenuhi && w.tipe !== 'MOMEN');
+  const unfulfilledMoments = moments.filter((m) => !m.terpenuhi);
+
+  const memLines =
+    latestMemories
+      .map((m) => `- [${m.hari}, ${m.tanggal}] ${m.isi}${m.deskripsi ? ` (${m.deskripsi})` : ''}`)
+      .join('\n') || '- Belum ada catatan memori pacar.';
+  const wishLines =
+    unfulfilledWish
+      .map((w) => `- ${w.judul}${w.catatan ? ` (${w.catatan})` : ''}`)
+      .join('\n') || '- Belum ada wishlist aktif.';
+  const momentLines =
+    unfulfilledMoments
+      .slice(0, 6)
+      .map((m) => `- ${m.judul} (${m.next_date || m.tanggal || '-'}${m.days_until != null ? `, H-${m.days_until}` : ''})`)
+      .join('\n') || '- Tidak ada momen spesial terdekat.';
+
+  const parsedBudget = Number(budget);
+  const budgetText =
+    Number.isFinite(parsedBudget) && parsedBudget > 0
+      ? `Rp ${Math.round(parsedBudget).toLocaleString('id-ID')}`
+      : 'Fleksibel (ramah kantong mahasiswa)';
+
+  const effectivePrompt =
+    String(prompt || '').trim() ||
+    (mode === 'date'
+      ? 'Berikan rekomendasi ide kencan weekend yang seru dan segar untuk pacar saya.'
+      : mode === 'gift'
+        ? 'Berikan rekomendasi hadiah/kado terbaik untuk pacar saya berdasarkan wishlist dan memorinya.'
+        : 'Berikan rekomendasi ide kencan atau hadiah terbaik untuk pacar saya.');
+
+  const focusDirective =
+    mode === 'date'
+      ? 'Fokus utama: 3-4 rekomendasi IDE KENCAN / TEMPAT DATE WEEKEND yang segar. WAJIB hindari tempat atau aktivitas yang baru saja dikunjungi/dilakukan pada catatan memori terbaru di atas!'
+      : mode === 'gift'
+        ? 'Fokus utama: 3-5 rekomendasi HADIAH / KADO yang memprioritaskan wishlist yang belum terpenuhi dan selaras dengan selera pacar di memori terbaru serta batas budget.'
+        : 'Analisis pertanyaan pengguna apakah meminta ide kencan/tempat date (wajib hindari tempat yang baru saja dikunjungi di memori terbaru) atau rekomendasi kado/hadiah (prioritaskan wishlist belum terpenuhi & sesuaikan budget).';
+
+  const sysMsg =
+    `Kamu adalah asisten pribadi cerdas dan perhatian dalam bahasa Indonesia. Sapa pengguna dengan "kamu" dan sebut pacar pengguna sebagai "dia" atau "pacarmu". ${
+      noEmoji ? 'WAJIB: Jangan gunakan emoji atau simbol ikon unicode sama sekali, cukup teks rapi dan bullet points "-".' : ''
+    }`;
+
+  const userPrompt = `Waktu sekarang: ${nowParts.display}.
+Permintaan pengguna: "${effectivePrompt}"
+Batas Budget: ${budgetText}
+
+15 MEMORI PACAR TERBARU (perhatikan tempat/aktivitas yang baru dikunjungi agar tidak diulang):
+${memLines}
+
+WISHLIST BELUM TERPENUHI (terpenuhi = 0):
+${wishLines}
+
+MOMEN SPESIAL AKTIF:
+${momentLines}
+
+INSTRUKSI:
+- ${focusDirective}
+- Jika budget disebutkan (${budgetText}), pastikan setiap ide menyertakan estimasi biaya yang masuk akal dan berada dalam batas budget tersebut.
+- Berikan format poin-poin terstruktur yang ringkas, jelas, dan menyertakan alasan personal dari data memori/wishlist di atas.${
+    noEmoji ? '\n- Jangan gunakan emoji sama sekali.' : ''
+  }`;
+
+  const fallback =
+    `Rekomendasi Berdasarkan Data Memori & Wishlist:\n` +
+    `Budget: ${budgetText}\n\n` +
+    `Wishlist Belum Terpenuhi:\n${wishLines}\n\n` +
+    `Catatan Memori Terbaru:\n${memLines}`;
+
+  return generateFreeformText(sysMsg, userPrompt, fallback, 750);
+}
+
+/**
+ * FITUR 2: Live AI Engine Diagnostic (Gemini 3.8 Flash <-> Groq Companion/Fallback)
+ * Tests both providers independently and logs latency/status into ai_logs.
+ */
+export async function testAiEngines() {
+  const client = getClient();
+  const groqKey = getGroqApiKey();
+
+  const testGemini = async () => {
+    if (!client) {
+      return {
+        configured: false,
+        ok: false,
+        status: 'UNCONFIGURED',
+        model: PRIMARY_GEMINI_MODEL,
+        latencyMs: 0,
+        error: 'GEMINI_API_KEY belum diatur',
+      };
+    }
+
+    const candidates = [
+      { model: PRIMARY_GEMINI_MODEL, thinkingLevel: ThinkingLevel.LOW, isFallback: false },
+      { model: 'gemini-3.1-flash-lite', thinkingLevel: ThinkingLevel.MINIMAL, isFallback: true },
+    ];
+
+    let lastErr = null;
+    for (const c of candidates) {
+      const t0 = Date.now();
+      try {
+        const res = await client.models.generateContent({
+          model: c.model,
+          contents: [{ role: 'user', parts: [{ text: 'Balas tepat satu kata: OK' }] }],
+          config: {
+            maxOutputTokens: 16,
+            temperature: 0,
+            thinkingConfig: { thinkingLevel: c.thinkingLevel },
+            abortSignal: AbortSignal.timeout(6500),
+          },
+        });
+        const latencyMs = Date.now() - t0;
+        const reply = String(res.text || 'OK').trim().slice(0, 40);
+        const status = c.isFallback ? 'FALLBACK' : 'SUCCESS';
+        safeRecordAiLog({ provider: 'GEMINI', status, latency_ms: latencyMs, model: c.model });
+        return {
+          configured: true,
+          ok: true,
+          status,
+          model: c.model,
+          primaryModel: PRIMARY_GEMINI_MODEL,
+          latencyMs,
+          reply,
+          error: lastErr ? `Primary ${PRIMARY_GEMINI_MODEL} lambat/error (${lastErr.message}), fallback berhasil` : null,
+        };
+      } catch (err) {
+        lastErr = err;
+        safeRecordAiLog({
+          provider: 'GEMINI',
+          status: 'ERROR',
+          latency_ms: Date.now() - t0,
+          model: c.model,
+        });
+      }
+    }
+
+    return {
+      configured: true,
+      ok: false,
+      status: 'ERROR',
+      model: PRIMARY_GEMINI_MODEL,
+      latencyMs: 0,
+      error: lastErr?.message || 'Gemini tidak merespons',
+    };
+  };
+
+  const testGroq = async () => {
+    if (!groqKey) {
+      return {
+        configured: false,
+        ok: false,
+        status: 'UNCONFIGURED',
+        model: GROQ_TEXT_CHAIN[0].model,
+        latencyMs: 0,
+        error: 'GROQ_API_KEY belum diatur',
+      };
+    }
+
+    let lastErr = null;
+    for (let i = 0; i < Math.min(2, GROQ_TEXT_CHAIN.length); i += 1) {
+      const entry = GROQ_TEXT_CHAIN[i];
+      const t0 = Date.now();
+      try {
+        const res = await fetch(`${GROQ_BASE_URL}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${groqKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: entry.model,
+            messages: [{ role: 'user', content: 'Balas tepat satu kata: OK' }],
+            max_tokens: 16,
+            temperature: 0,
+            ...(entry.reasoning_effort ? { reasoning_effort: entry.reasoning_effort } : {}),
+          }),
+          signal: AbortSignal.timeout(6500),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data?.error?.message || `HTTP ${res.status}`);
+        }
+        const latencyMs = Date.now() - t0;
+        const reply = String(data?.choices?.[0]?.message?.content || 'OK').trim().slice(0, 40);
+        const status = i > 0 ? 'FALLBACK' : 'SUCCESS';
+        safeRecordAiLog({ provider: 'GROQ', status, latency_ms: latencyMs, model: entry.model });
+        return {
+          configured: true,
+          ok: true,
+          status,
+          model: entry.model,
+          latencyMs,
+          reply,
+          error: null,
+        };
+      } catch (err) {
+        lastErr = err;
+        safeRecordAiLog({
+          provider: 'GROQ',
+          status: 'ERROR',
+          latency_ms: Date.now() - t0,
+          model: entry.model,
+        });
+      }
+    }
+
+    return {
+      configured: true,
+      ok: false,
+      status: 'ERROR',
+      model: GROQ_TEXT_CHAIN[0].model,
+      latencyMs: 0,
+      error: lastErr?.message || 'Groq tidak merespons',
+    };
+  };
+
+  const [gemini, groq] = await Promise.all([testGemini(), testGroq()]);
+  const fallbackReady = Boolean(gemini.ok && groq.ok);
+
+  let summary = 'Semua jalur AI tidak tersedia.';
+  if (fallbackReady) {
+    summary = `Jalur ganda aktif: Gemini (${gemini.model}, ${gemini.latencyMs}ms) & Groq (${groq.model}, ${groq.latencyMs}ms).`;
+  } else if (groq.ok) {
+    summary = `Groq aktif (${groq.latencyMs}ms); Gemini sedang gangguan/fallback (${gemini.error || gemini.status}).`;
+  } else if (gemini.ok) {
+    summary = `Gemini aktif (${gemini.latencyMs}ms); Groq sedang gangguan (${groq.error || groq.status}).`;
+  }
+
+  return {
+    testedAt: getWibParts().display,
+    gemini,
+    groq,
+    fallbackReady,
+    summary,
+  };
 }

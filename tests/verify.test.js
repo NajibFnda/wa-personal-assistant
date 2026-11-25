@@ -740,13 +740,158 @@ describe('All-in-One Personal Assistant End-to-End Verification (Isolated Test D
     const searchRes = await (await fetch(`${baseUrl}/api/search?q=olahraga`)).json();
     assert.ok(searchRes.total >= 1 && searchRes.habits.length >= 1);
 
-    // 6. Natural fast-path for AI Partner Ideas & Recap + ensure birthday/year is NOT hijacked as expense
+    // 6. Natural fast-path for AI Partner Recommendations & Recap + ensure birthday/year is NOT hijacked as expense
     const ideaIntent = tryLocalFastIntent({ text: 'ide kado buat dia', hasMedia: false, now });
-    assert.equal(ideaIntent?.intent, 'IDE_PACAR');
+    assert.equal(ideaIntent?.intent, 'REKOMENDASI_PACAR');
     const recapIntent = tryLocalFastIntent({ text: 'rekap memori bulan ini', hasMedia: false, now });
     assert.equal(recapIntent?.intent, 'IDE_PACAR');
     assert.equal(recapIntent?.payload?.kata_kunci, 'REKAP');
     assert.equal(tryLocalFastIntent({ text: 'pacarku lahir 12 desember 2003', hasMedia: false, now }), null);
     assert.equal(tryLocalFastIntent({ text: 'ulang tahun ibu 5 mei 1978', hasMedia: false, now }), null);
+  });
+
+  it('9. New 4 Features: Study Notes (catatan_kuliah), AI Telemetry, Smart Date/Gift Planner, Calendar ICS Feed & Zero-Emoji Frontend', async () => {
+    const { aiLogRepo, getCalendarFeedToken } = await import('../src/config/db.js');
+    const { tryLocalFastIntent, PRIMARY_GEMINI_MODEL } = await import('../src/services/gemini.js');
+    const { handleSlashCommand } = await import('../src/services/commands.js');
+    const now = new Date('2026-11-25T10:00:00+07:00');
+
+    // === FITUR 1: Catatan Kuliah & Ide ===
+    assert.equal(PRIMARY_GEMINI_MODEL, 'gemini-3.8-flash');
+    const noteSaveOutcome = await executeIntent({
+      result: {
+        intent: 'SIMPAN_CATATAN',
+        reply_message: 'Siap, catatan kuliah sudah dirangkum!',
+        payload: {
+          judul: 'Enkripsi Simetris AES',
+          kategori: 'Kriptografi',
+          ringkasan: '- AES menggunakan ukuran blok 128-bit\n- Panjang kunci 128, 192, atau 256-bit\n- Terdiri dari SubBytes, ShiftRows, MixColumns, AddRoundKey',
+        },
+      },
+      mediaType: 'audio',
+      now,
+    });
+    assert.match(noteSaveOutcome.text, /Enkripsi Simetris AES/);
+    assert.match(noteSaveOutcome.text, /VOICE/);
+
+    // Fast-path CARI_CATATAN must NOT collide with CARI_VAULT or CARI_MEMORI
+    const cariNoteIntent = tryLocalFastIntent({
+      text: 'Cari catatan kuliah Kriptografi tentang enkripsi',
+      hasMedia: false,
+      now,
+    });
+    assert.equal(cariNoteIntent?.intent, 'CARI_CATATAN');
+    const cariNoteOutcome = await executeIntent({ result: cariNoteIntent, rawText: 'Cari catatan kuliah Kriptografi tentang enkripsi', now });
+    assert.match(cariNoteOutcome.text, /Enkripsi Simetris AES/);
+
+    // /n slash command + REST API CRUD + Spotlight search
+    const nAdd = await handleSlashCommand({ text: '/n Ide Proyek | Aplikasi Kasir | - Offline-first SQLite\n- Cetak struk thermal', now });
+    assert.match(nAdd.text, /Aplikasi Kasir/);
+    const nSearch = await handleSlashCommand({ text: '/n cari kasir', now });
+    assert.match(nSearch.text, /Aplikasi Kasir/);
+
+    const listCatatanRes = await (await fetch(`${baseUrl}/api/catatan`)).json();
+    assert.ok(listCatatanRes.items.length >= 2);
+    assert.ok(listCatatanRes.categories.includes('Kriptografi'));
+
+    const postNote = await fetch(`${baseUrl}/api/catatan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ judul: 'Raft Consensus', kategori: 'Sistem Terdistribusi', ringkasan: '- Leader election\n- Log replication', sumber_tipe: 'IMAGE' }),
+    });
+    assert.equal(postNote.status, 201);
+    const createdNote = await postNote.json();
+    assert.equal(createdNote.sumber_tipe, 'IMAGE');
+
+    const spotNote = await (await fetch(`${baseUrl}/api/search?q=Enkripsi`)).json();
+    assert.ok(spotNote.catatan.length >= 1);
+
+    // === FITUR 2: AI Telemetry & Server Health ===
+    aiLogRepo.record({ provider: 'GEMINI', status: 'SUCCESS', latency_ms: 420, model: 'gemini-3.8-flash' });
+    aiLogRepo.record({ provider: 'GROQ', status: 'FALLBACK', latency_ms: 610, model: 'qwen/qwen3.8-27b' });
+
+    const telRes = await fetch(`${baseUrl}/api/telemetry`);
+    assert.equal(telRes.status, 200);
+    const tel = await telRes.json();
+    assert.equal(tel.ai.primaryGeminiModel, 'gemini-3.8-flash');
+    assert.ok(tel.ai.gemini.todayRequests >= 1);
+    assert.ok(tel.ai.groq.fallbackCount >= 1);
+    assert.ok(tel.ai.lastFallback && tel.ai.lastFallback.provider === 'GROQ');
+    assert.ok(tel.server.ramRssBytes > 0);
+    assert.ok(tel.server.dbSizeBytes > 0);
+    assert.ok(typeof tel.server.uptimeSeconds === 'number');
+
+    // === FITUR 3: Smart Date & Gift Assistant ===
+    const dateFast = tryLocalFastIntent({ text: 'Weekend ini enaknya ngajak dia ke mana?', hasMedia: false, now });
+    assert.equal(dateFast?.intent, 'REKOMENDASI_PACAR');
+
+    const giftFast = tryLocalFastIntent({ text: 'Kasih rekomendasi kado buat dia di bawah 200rb', hasMedia: false, now });
+    assert.equal(giftFast?.intent, 'REKOMENDASI_PACAR');
+    assert.equal(giftFast?.payload?.budget, 200000);
+
+    // Ensure /api/pacar/rekomendasi works (temporarily clear keys so test runs deterministic offline without network flakiness)
+    const savedGemKey = process.env.GEMINI_API_KEY;
+    const savedGroqKey = process.env.GROQ_API_KEY;
+    process.env.GEMINI_API_KEY = '';
+    process.env.GROQ_API_KEY = '';
+    try {
+      const recRes = await fetch(`${baseUrl}/api/pacar/rekomendasi`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'gift', budget: 200000 }),
+      });
+      assert.equal(recRes.status, 200);
+      const recData = await recRes.json();
+      assert.equal(recData.mode, 'gift');
+      assert.equal(recData.budget, 200000);
+      assert.ok(recData.memoriesUsed <= 15);
+      assert.match(recData.content, /200\.000/);
+    } finally {
+      process.env.GEMINI_API_KEY = savedGemKey || '';
+      process.env.GROQ_API_KEY = savedGroqKey || '';
+    }
+
+    // === FITUR 4: Calendar Sync (.ics Feed + Token Guard) ===
+    // Ensure at least one active task exists for VEVENT verification
+    await fetch(`${baseUrl}/api/tugas`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ judul: 'Presentasi Kriptografi', matkul: 'Kriptografi', deadline: '2026-12-01 15:00' }),
+    });
+
+    process.env.WEB_PIN = '121203';
+    try {
+      const unauthIcs = await fetch(`${baseUrl}/api/calendar.ics`);
+      assert.equal(unauthIcs.status, 401);
+
+      const infoRes = await fetch(`${baseUrl}/api/calendar/info`, {
+        headers: { 'x-web-pin': '121203' },
+      });
+      assert.equal(infoRes.status, 200);
+      const calInfo = await infoRes.json();
+      assert.equal(calInfo.token, getCalendarFeedToken());
+      assert.ok(calInfo.jadwalCount >= 1);
+      assert.ok(calInfo.tugasCount >= 1);
+
+      const icsRes = await fetch(`${baseUrl}${calInfo.path}`);
+      assert.equal(icsRes.status, 200);
+      assert.match(icsRes.headers.get('content-type') || '', /text\/calendar/i);
+      const icsText = await icsRes.text();
+      assert.match(icsText, /BEGIN:VCALENDAR/);
+      assert.match(icsText, /TZID:Asia\/Jakarta/);
+      assert.match(icsText, /RRULE:FREQ=WEEKLY;BYDAY=/);
+      assert.match(icsText, /UID:jadwal-/);
+      assert.match(icsText, /UID:tugas-/);
+      assert.match(icsText, /END:VCALENDAR/);
+    } finally {
+      process.env.WEB_PIN = '';
+    }
+
+    // === ZERO EMOJI POLICY CHECK ON FRONTEND ===
+    const emojiRe = /\p{Extended_Pictographic}/u;
+    for (const rel of ['public/index.html', 'public/css/style.css', 'public/js/app.js']) {
+      const content = fs.readFileSync(path.join(process.cwd(), rel), 'utf8');
+      assert.equal(emojiRe.test(content), false, `Found prohibited emoji in ${rel}`);
+    }
   });
 });

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -155,6 +156,25 @@ db.exec(`
     label TEXT NOT NULL,
     durasi_menit INTEGER NOT NULL,
     selesai_pada TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS catatan_kuliah (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    judul TEXT NOT NULL,
+    kategori TEXT DEFAULT 'Umum',
+    ringkasan TEXT NOT NULL,
+    sumber_tipe TEXT DEFAULT 'TEXT',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS ai_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tanggal TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    status TEXT NOT NULL,
+    latency_ms INTEGER,
+    model TEXT DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 `);
@@ -1509,6 +1529,189 @@ export const focusRepo = {
   },
 };
 
+/* ==================== FITUR 1: CATATAN KULIAH & IDE (VOICE-TO-NOTES) ==================== */
+const ALLOWED_NOTE_SOURCES = new Set(['TEXT', 'VOICE', 'IMAGE']);
+
+export const catatanRepo = {
+  list({ kategori, q } = {}) {
+    const conditions = [];
+    const params = [];
+
+    if (kategori && kategori !== 'all' && String(kategori).trim()) {
+      conditions.push('lower(kategori) = lower(?)');
+      params.push(String(kategori).trim());
+    }
+    if (q && String(q).trim()) {
+      const pat = `%${String(q).trim().toLowerCase()}%`;
+      conditions.push('(lower(judul) LIKE ? OR lower(kategori) LIKE ? OR lower(ringkasan) LIKE ?)');
+      params.push(pat, pat, pat);
+    }
+
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    return db.prepare(`SELECT * FROM catatan_kuliah ${where} ORDER BY created_at DESC, id DESC`).all(...params);
+  },
+
+  getCategories() {
+    const rows = db
+      .prepare("SELECT DISTINCT kategori FROM catatan_kuliah WHERE trim(coalesce(kategori, '')) != '' ORDER BY kategori ASC")
+      .all();
+    return rows.map((r) => r.kategori);
+  },
+
+  getById(id) {
+    return db.prepare('SELECT * FROM catatan_kuliah WHERE id = ?').get(Number(id));
+  },
+
+  create({ judul, kategori = 'Umum', ringkasan, sumber_tipe = 'TEXT' }) {
+    const cleanJudul = String(judul || '').trim();
+    const cleanRingkasan = String(ringkasan || '').trim();
+    const cleanKategori = String(kategori || 'Umum').trim() || 'Umum';
+    const upSource = String(sumber_tipe || 'TEXT').trim().toUpperCase();
+    const cleanSource = ALLOWED_NOTE_SOURCES.has(upSource) ? upSource : 'TEXT';
+
+    if (!cleanJudul) throw new Error('Judul catatan wajib diisi.');
+    if (!cleanRingkasan) throw new Error('Isi ringkasan catatan wajib diisi.');
+
+    const res = db
+      .prepare('INSERT INTO catatan_kuliah (judul, kategori, ringkasan, sumber_tipe) VALUES (?, ?, ?, ?)')
+      .run(cleanJudul, cleanKategori, cleanRingkasan, cleanSource);
+    return this.getById(res.lastInsertRowid);
+  },
+
+  update(id, fields = {}) {
+    const existing = this.getById(id);
+    if (!existing) return null;
+
+    const judul = fields.judul !== undefined ? String(fields.judul || '').trim() : existing.judul;
+    const kategori = fields.kategori !== undefined ? String(fields.kategori || 'Umum').trim() || 'Umum' : existing.kategori;
+    const ringkasan = fields.ringkasan !== undefined ? String(fields.ringkasan || '').trim() : existing.ringkasan;
+    const upSource =
+      fields.sumber_tipe !== undefined ? String(fields.sumber_tipe || 'TEXT').trim().toUpperCase() : existing.sumber_tipe;
+    const sumber_tipe = ALLOWED_NOTE_SOURCES.has(upSource) ? upSource : existing.sumber_tipe;
+
+    if (!judul) throw new Error('Judul catatan wajib diisi.');
+    if (!ringkasan) throw new Error('Isi ringkasan catatan wajib diisi.');
+
+    db.prepare('UPDATE catatan_kuliah SET judul = ?, kategori = ?, ringkasan = ?, sumber_tipe = ? WHERE id = ?').run(
+      judul,
+      kategori,
+      ringkasan,
+      sumber_tipe,
+      Number(id)
+    );
+    return this.getById(id);
+  },
+
+  search(query) {
+    const all = db.prepare('SELECT * FROM catatan_kuliah ORDER BY id DESC').all();
+    const q = String(query || '').trim().toLowerCase();
+    if (!q || q === 'semua' || q === 'all') return all;
+
+    const stopWords = new Set(['cari', 'lihat', 'liat', 'cek', 'catatan', 'kuliah', 'materi', 'tentang', 'soal', 'yang', 'dong', 'tolong', 'minta']);
+    const tokens = q.split(/\s+/).filter((w) => w.length >= 2 && !stopWords.has(w));
+    const effectiveTokens = tokens.length ? tokens : [q];
+
+    return all
+      .map((item) => {
+        const jLow = item.judul.toLowerCase();
+        const kLow = (item.kategori || '').toLowerCase();
+        const rLow = item.ringkasan.toLowerCase();
+        let score = 0;
+        if (jLow.includes(q)) score += 60;
+        if (kLow.includes(q)) score += 45;
+        if (rLow.includes(q)) score += 20;
+        for (const tok of effectiveTokens) {
+          if (kLow.includes(tok)) score += 18;
+          if (jLow.includes(tok)) score += 15;
+          if (rLow.includes(tok)) score += 6;
+        }
+        return { item, score };
+      })
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .map((x) => x.item);
+  },
+
+  remove(id) {
+    const res = db.prepare('DELETE FROM catatan_kuliah WHERE id = ?').run(Number(id));
+    return res.changes > 0;
+  },
+};
+
+/* ==================== FITUR 2: AI TELEMETRY LOGS ==================== */
+const GEMINI_DAILY_QUOTA = Number(process.env.GEMINI_DAILY_QUOTA) || 1500;
+const GROQ_DAILY_QUOTA = Number(process.env.GROQ_DAILY_QUOTA) || 1000;
+
+export const aiLogRepo = {
+  record({ provider, status, latency_ms = 0, model = '', tanggal = null }) {
+    const cleanDate = normalizeDateStr(tanggal) || getWibParts().dateStr;
+    const cleanProvider = String(provider || 'GEMINI').toUpperCase() === 'GROQ' ? 'GROQ' : 'GEMINI';
+    const rawStatus = String(status || 'SUCCESS').toUpperCase();
+    const cleanStatus = ['SUCCESS', 'FALLBACK', 'ERROR'].includes(rawStatus) ? rawStatus : 'SUCCESS';
+    const cleanLatency = Math.max(0, Math.round(Number(latency_ms) || 0));
+
+    const res = db
+      .prepare('INSERT INTO ai_logs (tanggal, provider, status, latency_ms, model) VALUES (?, ?, ?, ?, ?)')
+      .run(cleanDate, cleanProvider, cleanStatus, cleanLatency, String(model || '').slice(0, 80));
+
+    // Keep table bounded to latest 2000 rows
+    db.prepare('DELETE FROM ai_logs WHERE id NOT IN (SELECT id FROM ai_logs ORDER BY id DESC LIMIT 2000)').run();
+    return db.prepare('SELECT * FROM ai_logs WHERE id = ?').get(res.lastInsertRowid);
+  },
+
+  getTodayTelemetry(now = new Date()) {
+    const today = getWibParts(now).dateStr;
+    const rows = db.prepare('SELECT * FROM ai_logs WHERE tanggal = ? ORDER BY id DESC').all(today);
+
+    const agg = (prov, quota) => {
+      const list = rows.filter((r) => r.provider === prov);
+      const ok = list.filter((r) => r.status !== 'ERROR');
+      const errors = list.filter((r) => r.status === 'ERROR').length;
+      const fallbacks = list.filter((r) => r.status === 'FALLBACK').length;
+      const avgLatencyMs = ok.length
+        ? Math.round(ok.reduce((sum, r) => sum + (Number(r.latency_ms) || 0), 0) / ok.length)
+        : 0;
+      const pct = quota > 0 ? Math.min(100, Math.round((list.length / quota) * 1000) / 10) : 0;
+      return {
+        todayRequests: list.length,
+        successCount: ok.length,
+        fallbackCount: fallbacks,
+        errorCount: errors,
+        dailyQuota: quota,
+        pct,
+        avgLatencyMs,
+      };
+    };
+
+    const lastFallback =
+      db.prepare("SELECT * FROM ai_logs WHERE status = 'FALLBACK' ORDER BY id DESC LIMIT 1").get() || null;
+    const lastError =
+      db.prepare("SELECT * FROM ai_logs WHERE status = 'ERROR' ORDER BY id DESC LIMIT 1").get() || null;
+    const recentLogs = db.prepare('SELECT * FROM ai_logs ORDER BY id DESC LIMIT 12').all();
+
+    return {
+      tanggal: today,
+      gemini: agg('GEMINI', GEMINI_DAILY_QUOTA),
+      groq: agg('GROQ', GROQ_DAILY_QUOTA),
+      lastFallback,
+      lastError,
+      recentLogs,
+    };
+  },
+};
+
+/* ==================== FITUR 4: CALENDAR FEED TOKEN ==================== */
+export function getCalendarFeedToken() {
+  const envTok = (process.env.CALENDAR_TOKEN || '').trim();
+  if (envTok) return envTok;
+  let stored = stateRepo.get('calendar_feed_token');
+  if (!stored) {
+    stored = crypto.randomBytes(12).toString('hex');
+    stateRepo.set('calendar_feed_token', stored);
+  }
+  return stored;
+}
+
 /* ==================== GLOBAL SPOTLIGHT SEARCH ==================== */
 export function globalSearch(query, limitPerGroup = 5) {
   const q = String(query || '').trim().toLowerCase();
@@ -1522,6 +1725,7 @@ export function globalSearch(query, limitPerGroup = 5) {
       keuangan: [],
       habits: [],
       reminders: [],
+      catatan: [],
       total: 0,
     };
   }
@@ -1553,6 +1757,9 @@ export function globalSearch(query, limitPerGroup = 5) {
   const reminders = db
     .prepare('SELECT * FROM quick_reminders WHERE lower(pesan) LIKE ? ORDER BY selesai ASC, trigger_at ASC LIMIT ?')
     .all(pat, lim);
+  const catatan = db
+    .prepare("SELECT * FROM catatan_kuliah WHERE lower(judul) LIKE ? OR lower(coalesce(kategori, '')) LIKE ? OR lower(ringkasan) LIKE ? ORDER BY id DESC LIMIT ?")
+    .all(pat, pat, pat, lim);
 
   const total =
     jadwal.length +
@@ -1562,9 +1769,10 @@ export function globalSearch(query, limitPerGroup = 5) {
     vault.length +
     keuangan.length +
     habits.length +
-    reminders.length;
+    reminders.length +
+    catatan.length;
 
-  return { jadwal, tugas, memori, wishlist, vault, keuangan, habits, reminders, total };
+  return { jadwal, tugas, memori, wishlist, vault, keuangan, habits, reminders, catatan, total };
 }
 
 /* ==================== SECURITY & ACCESS AUDIT LOGS ==================== */
@@ -1671,6 +1879,7 @@ export function getDatabaseStats() {
     memori_pacar: db.prepare('SELECT COUNT(*) AS c FROM memori_pacar').get().c,
     momen_wishlist: db.prepare('SELECT COUNT(*) AS c FROM momen_wishlist').get().c,
     vault: db.prepare('SELECT COUNT(*) AS c FROM vault').get().c,
+    catatan_kuliah: db.prepare('SELECT COUNT(*) AS c FROM catatan_kuliah').get().c,
     pengeluaran: db.prepare('SELECT COUNT(*) AS c FROM pengeluaran').get().c,
     push_subscriptions: db.prepare('SELECT COUNT(*) AS c FROM push_subscriptions').get().c,
   };
@@ -1680,6 +1889,7 @@ export function getDatabaseStats() {
     counts.memori_pacar +
     counts.momen_wishlist +
     counts.vault +
+    counts.catatan_kuliah +
     counts.pengeluaran;
   return counts;
 }

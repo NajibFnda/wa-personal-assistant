@@ -12,6 +12,7 @@ import {
   MEMORI_UPLOADS_DIR,
   PROJECT_ROOT,
   VAULT_UPLOADS_DIR,
+  catatanRepo,
   focusRepo,
   habitRepo,
   jadwalRepo,
@@ -40,6 +41,7 @@ import {
   analyzeMessage,
   generateMonthlyPartnerRecap,
   generatePartnerIdeas,
+  generatePartnerRecommendation,
   synthesizeMemoryAnswer,
 } from './gemini.js';
 import { handleSlashCommand } from './commands.js';
@@ -998,19 +1000,101 @@ export async function executeIntent({
       };
     }
 
+    case 'SIMPAN_CATATAN': {
+      const sumberTipe =
+        mediaType === 'audio' ? 'VOICE' : mediaType === 'image' ? 'IMAGE' : 'TEXT';
+      const kategori = String(payload.kategori || payload.matkul || 'Umum').trim() || 'Umum';
+      const judul =
+        String(payload.judul || payload.kata_kunci || '').trim() ||
+        (kategori !== 'Umum' ? `Ringkasan ${kategori}` : 'Catatan Baru');
+      const ringkasan = String(payload.ringkasan || payload.isi_catatan || rawText || '').trim();
+      if (!ringkasan) {
+        return {
+          text: 'Isi catatan atau materi yang ingin dirangkum belum terbaca. Kirim voice note, foto slide, atau teks materinya ya.',
+        };
+      }
+
+      const saved = catatanRepo.create({
+        judul,
+        kategori,
+        ringkasan,
+        sumber_tipe: sumberTipe,
+      });
+
+      emitDataChange('catatan', 'whatsapp');
+      return {
+        text: `${reply_message}\n\n📚 *Catatan Kuliah / Ide Tersimpan*\n• Judul: *${saved.judul}*\n• Kategori: *${saved.kategori}* _(${saved.sumber_tipe})_\n\n*Ringkasan:*\n${saved.ringkasan}`,
+      };
+    }
+
+    case 'CARI_CATATAN': {
+      const rawQuery = String(payload.kata_kunci || payload.kategori || payload.matkul || payload.judul || '').trim();
+      const wantsAll = !rawQuery || /^semua$/i.test(rawQuery);
+      const matches = wantsAll ? catatanRepo.list() : catatanRepo.search(rawQuery);
+
+      if (!matches.length) {
+        return {
+          text: wantsAll
+            ? '📚 Belum ada catatan kuliah atau ide tersimpan.\nKirim voice note/teks dengan perintah *"Rangkumin jadi catatan kuliah Kriptografi"* atau pakai `/n`.'
+            : `📚 Tidak ditemukan catatan yang cocok dengan *"${rawQuery}"*.\nKetik *"lihat catatan kuliah"* atau \`/n\` untuk melihat seluruh catatan.`,
+        };
+      }
+
+      if (wantsAll && matches.length > 5) {
+        const listLines = matches
+          .slice(0, 12)
+          .map((n, i) => `${i + 1}. *[${n.kategori}]* ${n.judul} _(${n.sumber_tipe})_`);
+        return {
+          text: `📚 *Daftar Catatan Kuliah & Ide (${matches.length}):*\n\n${listLines.join('\n')}\n\n_Ketik "cari catatan <topik/matkul>" untuk membaca detail ringkasannya._`,
+        };
+      }
+
+      const shown = matches.slice(0, 4);
+      const blocks = shown.map((n, i) => {
+        const preview = n.ringkasan.length > 420 ? `${n.ringkasan.slice(0, 420)}...` : n.ringkasan;
+        return `${i + 1}. *${n.judul}* _[${n.kategori} · ${n.sumber_tipe}]_\n${preview}`;
+      });
+      const header = wantsAll
+        ? `📚 *Catatan Terbaru (${matches.length}):*`
+        : `📚 *Hasil Pencarian Catatan "${rawQuery}" (${matches.length}):*`;
+
+      return {
+        text: `${header}\n\n${blocks.join('\n\n')}`,
+      };
+    }
+
+    case 'REKOMENDASI_PACAR':
     case 'IDE_PACAR': {
       const key = String(payload.kata_kunci || '').trim();
-      if (key.toUpperCase() === 'REKAP') {
+      if (intent === 'IDE_PACAR' && key.toUpperCase() === 'REKAP') {
         const sinceDate = shiftDateStr(nowParts.dateStr, -30);
         const memories = memoriRepo.list({ tanggal_mulai: sinceDate, tanggal_akhir: nowParts.dateStr, limit: 35 });
         const recap = await generateMonthlyPartnerRecap(memories, `30 Hari Terakhir (${sinceDate} s/d ${nowParts.dateStr})`, now);
         return { text: `💝 *Rekap Memori Pacar (30 Hari Terakhir):*\n\n${recap}` };
       }
-      const memories = memoriRepo.list({ limit: 25 });
-      const wishlists = wishlistRepo.list({ tipe: 'WISHLIST' });
-      const moments = wishlistRepo.getUpcomingMoments(60, now);
-      const ideas = await generatePartnerIdeas(rawText || key || 'ide kado dan date untuk pacar', { memories, wishlists, moments }, now);
-      return { text: `💝 *Rekomendasi Personal untuk Pacarmu:*\n\n${ideas}` };
+      const memories = memoriRepo.list({ limit: 15 });
+      const unfulfilledAll = wishlistRepo.list().filter((item) => !item.terpenuhi);
+      const wishlists = unfulfilledAll.filter((item) => item.tipe === 'WISHLIST');
+      const moments = unfulfilledAll.filter((item) => item.tipe === 'MOMEN');
+      const combinedQuery = rawText || key || 'rekomendasi kencan dan hadiah buat pacar';
+      const isGift = /\b(kado|hadiah|gift|wishlist|beli(?:in|kan)?)\b/i.test(combinedQuery);
+      const isDate = /\b(date|kencan|weekend|akhir\s+pekan|ngajak|ajak|ke\s*mana|jalan|nongkrong|makan)\b/i.test(combinedQuery);
+      const mode = isGift && !isDate ? 'gift' : isDate && !isGift ? 'date' : 'auto';
+      const budget = Number(payload.budget) > 0 ? Number(payload.budget) : null;
+
+      const recommendation = await generatePartnerRecommendation(
+        {
+          prompt: combinedQuery,
+          mode,
+          budget,
+          memories,
+          wishlists,
+          moments,
+          noEmoji: false,
+        },
+        now
+      );
+      return { text: `💝 *Smart Date & Gift Assistant:*\n\n${recommendation}` };
     }
 
     case 'HABIT_CHECKIN': {

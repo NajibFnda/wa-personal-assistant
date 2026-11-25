@@ -111,6 +111,11 @@
           <span>Tugas</span>
           <span class="nav-count count-warn" id="badge-tugas">0</span>
         </button>
+        <button class="pill-nav-item" data-tab="catatan" type="button">
+          <i data-lucide="book-open" class="icon-16"></i>
+          <span>Catatan</span>
+          <span class="nav-count" id="badge-catatan">0</span>
+        </button>
         <button class="pill-nav-item" data-tab="memori" type="button">
           <i data-lucide="heart" class="icon-16"></i>
           <span>Brankas Memori</span>
@@ -318,6 +323,74 @@
           </article>
         </div>
 
+        <!-- System & AI Telemetry Widget (Fitur 2) -->
+        <article class="glass-card bento-widget telemetry-card">
+          <div class="card-header">
+            <div class="card-title-group">
+              <span class="title-icon"><i data-lucide="activity" class="icon-18"></i></span>
+              <div>
+                <h3>System &amp; AI Telemetry</h3>
+                <p class="muted text-xs" id="telemetry-model-sub">Primary: gemini-3.8-flash • Companion &amp; Fallback: Groq</p>
+              </div>
+            </div>
+            <div class="header-actions">
+              <button id="btn-refresh-telemetry" class="btn btn-ghost btn-sm" type="button" title="Muat Ulang Telemetry">
+                <i data-lucide="refresh-cw" class="icon-14"></i>
+                <span>Segarkan</span>
+              </button>
+              <button id="btn-test-ai-engine" class="btn btn-primary btn-sm" type="button">
+                <i data-lucide="cpu" class="icon-14"></i>
+                <span>Test AI Engine</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="telemetry-grid">
+            <div class="telemetry-quota-col">
+              <div class="telemetry-bar-item">
+                <div class="telemetry-bar-head">
+                  <span class="fw-600 text-sm">Gemini AI <span class="muted mono text-xs" id="tel-gemini-model">(gemini-3.8-flash)</span></span>
+                  <span class="mono text-xs" id="tel-gemini-meta">0 / 1500 req (0%) • 0 ms</span>
+                </div>
+                <div class="budget-bar-track">
+                  <div id="tel-gemini-bar" class="budget-bar-fill" style="width: 0%;"></div>
+                </div>
+              </div>
+
+              <div class="telemetry-bar-item">
+                <div class="telemetry-bar-head">
+                  <span class="fw-600 text-sm">Groq Engine <span class="muted mono text-xs">(LLM &amp; Whisper)</span></span>
+                  <span class="mono text-xs" id="tel-groq-meta">0 / 1000 req (0%) • 0 ms</span>
+                </div>
+                <div class="budget-bar-track">
+                  <div id="tel-groq-bar" class="budget-bar-fill" style="width: 0%;"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="telemetry-stat-grid">
+              <div class="telemetry-stat-box">
+                <span class="telemetry-stat-label">Server Uptime</span>
+                <span class="telemetry-stat-val mono" id="tel-uptime">--</span>
+              </div>
+              <div class="telemetry-stat-box">
+                <span class="telemetry-stat-label">RAM (RSS)</span>
+                <span class="telemetry-stat-val mono" id="tel-ram">--</span>
+              </div>
+              <div class="telemetry-stat-box">
+                <span class="telemetry-stat-label">Ukuran DB</span>
+                <span class="telemetry-stat-val mono" id="tel-db-size">--</span>
+              </div>
+              <div class="telemetry-stat-box">
+                <span class="telemetry-stat-label">Status Fallback</span>
+                <span class="telemetry-stat-val text-xs" id="tel-fallback">Stabil</span>
+              </div>
+            </div>
+          </div>
+
+          <div id="telemetry-test-result" class="telemetry-test-result hidden"></div>
+        </article>
+
         <!-- Productivity Bento Row: Habit Streak Grid + Focus Timer & Quick Reminders -->
         <div class="two-col-grid">
           <!-- Habit Tracker & Monochrome Streak Grid -->
@@ -453,6 +526,37 @@
             <p>Belum ada jadwal. Tambahkan manual di sini atau kirim pesan dan screenshot KRS lewat WhatsApp.</p>
           </div>
         </div>
+
+        <!-- Calendar Sync (.ics) Card (Fitur 4) -->
+        <article class="glass-card calendar-sync-card">
+          <div class="card-header compact-head">
+            <div class="card-title-group">
+              <span class="title-icon"><i data-lucide="share-2" class="icon-18"></i></span>
+              <div>
+                <h3>Calendar Sync (.ics)</h3>
+                <p class="muted text-xs">Feed iCalendar otomatis (WIB / Asia/Jakarta) untuk jadwal aktif &amp; deadline tugas</p>
+              </div>
+            </div>
+            <span id="ics-sync-counts" class="pill pill-muted mono">Memuat...</span>
+          </div>
+
+          <div class="ics-url-row">
+            <input id="ics-feed-url-input" class="mono text-xs" type="text" readonly value="Memuat link kalender..." aria-label="URL Feed Kalender ICS" />
+            <button id="btn-copy-ics-url" class="btn btn-primary btn-sm" type="button">
+              <i data-lucide="copy" class="icon-14"></i>
+              <span>Salin Link Kalender</span>
+            </button>
+            <a id="btn-download-ics" class="btn btn-secondary btn-sm" href="/api/calendar.ics" download="personal-assistant.ics">
+              <i data-lucide="download" class="icon-14"></i>
+              <span>Unduh .ics</span>
+            </a>
+          </div>
+
+          <div class="ics-guide">
+            <p class="text-xs muted"><strong>Apple Calendar (iOS):</strong> Buka Pengaturan &rarr; Kalender &rarr; Akun &rarr; Tambah Akun &rarr; Lainnya &rarr; Tambah Kalender Langganan, lalu tempel URL di atas.</p>
+            <p class="text-xs muted"><strong>Google Calendar:</strong> Buka calendar.google.com &rarr; Kalender lain (+) &rarr; Dari URL &rarr; tempel URL di atas agar jadwal &amp; tugas tersinkron otomatis.</p>
+          </div>
+        </article>
       </section>
 
       <!-- ==================== TAB 3: TUGAS & DEADLINE ==================== -->
@@ -478,6 +582,36 @@
         <div id="tugas-empty" class="empty-state glass-card hidden">
           <span class="empty-icon-wrap"><i data-lucide="check-circle-2" class="icon-24"></i></span>
           <p>Tidak ada tugas pada filter ini.</p>
+        </div>
+      </section>
+
+      <!-- ==================== TAB 3B: CATATAN KULIAH & IDE (FITUR 1) ==================== -->
+      <section id="tab-catatan" class="tab-panel">
+        <div class="section-header">
+          <div>
+            <h1>Catatan Kuliah &amp; Ide</h1>
+            <p class="muted">Ringkasan materi terstruktur dari Voice Note (Groq Whisper), foto slide/papan tulis, atau input manual</p>
+          </div>
+          <button id="btn-open-catatan-modal" class="btn btn-primary" type="button">
+            <i data-lucide="plus" class="icon-16"></i>
+            <span>Tambah Catatan</span>
+          </button>
+        </div>
+
+        <div class="vault-toolbar">
+          <div id="catatan-category-bar" class="filter-bar">
+            <button class="filter-pill active" data-catatan-cat="all" type="button">Semua</button>
+          </div>
+          <div class="input-icon-wrap vault-search">
+            <i data-lucide="search" class="icon-16 input-leading-icon"></i>
+            <input id="catatan-search-q" type="search" placeholder="Cari judul, matkul, atau isi catatan..." />
+          </div>
+        </div>
+
+        <div id="catatan-grid" class="bento-grid bento-cards"></div>
+        <div id="catatan-empty" class="empty-state glass-card hidden">
+          <span class="empty-icon-wrap"><i data-lucide="book-open" class="icon-24"></i></span>
+          <p>Belum ada catatan kuliah atau ide tersimpan. Kirim Voice Note / teks ke WhatsApp atau klik Tambah Catatan.</p>
         </div>
       </section>
 
@@ -511,6 +645,53 @@
             </button>
           </div>
         </div>
+
+        <!-- Smart Date & Gift Assistant Card (Fitur 3) -->
+        <article class="glass-card smart-planner-card">
+          <div class="card-header compact-head">
+            <div class="card-title-group">
+              <span class="title-icon"><i data-lucide="sparkles" class="icon-18"></i></span>
+              <div>
+                <h3>Smart Date &amp; Gift Assistant</h3>
+                <p class="muted text-xs">Analisis otomatis 15 memori terbaru (menghindari tempat yang baru dikunjungi) &amp; seluruh wishlist aktif</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="smart-planner-controls">
+            <div class="input-icon-wrap smart-budget-wrap">
+              <i data-lucide="wallet" class="icon-15 input-leading-icon"></i>
+              <input id="pacar-rec-budget" type="number" min="0" step="10000" placeholder="Budget opsional (Rp, misal: 200000)" aria-label="Budget opsional" />
+            </div>
+            <button id="btn-gen-date-ideas" class="btn btn-primary btn-sm" type="button">
+              <i data-lucide="compass" class="icon-15"></i>
+              <span>Generate Ide Kencan Weekend</span>
+            </button>
+            <button id="btn-gen-gift-ideas" class="btn btn-secondary btn-sm" type="button">
+              <i data-lucide="gift" class="icon-15"></i>
+              <span>Rekomendasi Hadiah dari Wishlist</span>
+            </button>
+          </div>
+
+          <div id="pacar-rec-result" class="smart-planner-output hidden">
+            <div class="smart-planner-out-head">
+              <div class="card-title-group">
+                <span id="pacar-rec-badge" class="pill pill-blue">Rekomendasi AI</span>
+                <span id="pacar-rec-meta" class="text-xs muted mono"></span>
+              </div>
+              <div class="memori-actions">
+                <button id="btn-copy-pacar-rec" class="btn btn-ghost btn-sm" type="button">
+                  <i data-lucide="copy" class="icon-14"></i>
+                  <span>Salin</span>
+                </button>
+                <button id="btn-clear-pacar-rec" class="icon-btn" type="button" title="Tutup Hasil" aria-label="Tutup Hasil">
+                  <i data-lucide="x" class="icon-14"></i>
+                </button>
+              </div>
+            </div>
+            <div id="pacar-rec-body" class="smart-planner-body"></div>
+          </div>
+        </article>
 
         <div class="memori-layout">
           <!-- Timeline Memori -->
@@ -782,6 +963,10 @@
       <button class="dock-item" data-tab="tugas" type="button">
         <i data-lucide="check-square" class="icon-18"></i>
         <span>Tugas</span>
+      </button>
+      <button class="dock-item" data-tab="catatan" type="button">
+        <i data-lucide="book-open" class="icon-18"></i>
+        <span>Catatan</span>
       </button>
       <button class="dock-item" data-tab="memori" type="button">
         <i data-lucide="heart" class="icon-18"></i>
@@ -1459,6 +1644,95 @@
             <span>Salin Hasil</span>
           </button>
           <button type="button" class="btn btn-primary btn-sm" data-close-modal="modal-ai-insight">Tutup</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Tambah / Edit Catatan Kuliah & Ide (Fitur 1) -->
+  <div id="modal-catatan" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-catatan-title">
+    <div class="modal-backdrop" data-close-modal="modal-catatan"></div>
+    <div class="modal-content modal-content-lg">
+      <div class="modal-header">
+        <div class="card-title-group">
+          <span class="title-icon"><i data-lucide="book-open" class="icon-18"></i></span>
+          <h3 id="modal-catatan-title">Tambah Catatan Kuliah / Ide</h3>
+        </div>
+        <button class="icon-btn" type="button" data-close-modal="modal-catatan" aria-label="Tutup">
+          <i data-lucide="x" class="icon-16"></i>
+        </button>
+      </div>
+      <form id="form-catatan" class="stack-md">
+        <input type="hidden" id="catatan-id" />
+        <label class="field">
+          <span>Judul Catatan</span>
+          <input id="catatan-judul" type="text" placeholder="Contoh: Pengantar Enkripsi Simetris & AES" required />
+        </label>
+        <div class="form-row">
+          <label class="field">
+            <span>Kategori / Mata Kuliah</span>
+            <input id="catatan-kategori" type="text" list="catatan-kategori-suggestions" placeholder="Contoh: Kriptografi / Ide Proyek" required />
+            <datalist id="catatan-kategori-suggestions">
+              <option value="Kriptografi"></option>
+              <option value="Sistem Terdistribusi"></option>
+              <option value="Pengolahan Citra Digital"></option>
+              <option value="Ide Proyek"></option>
+              <option value="Umum"></option>
+            </datalist>
+          </label>
+          <label class="field">
+            <span>Tipe Sumber</span>
+            <select id="catatan-sumber">
+              <option value="TEXT">TEXT (Manual / Teks)</option>
+              <option value="VOICE">VOICE (Transkrip Audio)</option>
+              <option value="IMAGE">IMAGE (Foto Slide / Papan Tulis)</option>
+            </select>
+          </label>
+        </div>
+        <label class="field">
+          <span>Ringkasan Terstruktur (gunakan "-" di awal baris untuk bullet points)</span>
+          <textarea id="catatan-ringkasan" rows="8" placeholder="- Poin utama pertama&#10;- Poin utama kedua&#10;- Contoh implementasi / kesimpulan" required></textarea>
+        </label>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close-modal="modal-catatan">Batal</button>
+          <button type="submit" class="btn btn-primary">Simpan Catatan</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal Baca Detail Catatan Kuliah (Fitur 1) -->
+  <div id="modal-catatan-detail" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="catatan-detail-title">
+    <div class="modal-backdrop" data-close-modal="modal-catatan-detail"></div>
+    <div class="modal-content modal-content-lg">
+      <div class="modal-header">
+        <div class="card-title-group">
+          <span class="title-icon"><i data-lucide="file-text" class="icon-18"></i></span>
+          <div>
+            <h3 id="catatan-detail-title">Detail Catatan</h3>
+            <div id="catatan-detail-meta" class="note-meta-badges"></div>
+          </div>
+        </div>
+        <button class="icon-btn" type="button" data-close-modal="modal-catatan-detail" aria-label="Tutup">
+          <i data-lucide="x" class="icon-16"></i>
+        </button>
+      </div>
+      <div class="stack-md">
+        <div id="catatan-detail-body" class="note-detail-body"></div>
+        <div class="modal-footer">
+          <button id="btn-copy-catatan-detail" type="button" class="btn btn-secondary btn-sm">
+            <i data-lucide="copy" class="icon-14"></i>
+            <span>Salin Ringkasan</span>
+          </button>
+          <button id="btn-edit-catatan-detail" type="button" class="btn btn-secondary btn-sm">
+            <i data-lucide="pencil" class="icon-14"></i>
+            <span>Edit</span>
+          </button>
+          <button id="btn-del-catatan-detail" type="button" class="btn btn-danger-ghost btn-sm">
+            <i data-lucide="trash-2" class="icon-14"></i>
+            <span>Hapus</span>
+          </button>
+          <button type="button" class="btn btn-primary btn-sm" data-close-modal="modal-catatan-detail">Tutup</button>
         </div>
       </div>
     </div>

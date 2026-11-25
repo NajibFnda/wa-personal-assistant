@@ -18,6 +18,13 @@ const state = {
   spotlightTimer: null,
   jadwalList: [],
   tugasList: [],
+  catatanList: [],
+  catatanCategories: [],
+  catatanCategory: 'all',
+  activeCatatanDetail: null,
+  telemetryData: null,
+  calendarInfo: null,
+  lastPacarRecText: '',
   memoriList: [],
   wishlistList: [],
   vaultList: [],
@@ -208,7 +215,7 @@ function startClock() {
 }
 
 /* ==================== NAVIGATION & SLIDING PILL INDICATOR ==================== */
-const TAB_ORDER = ['overview', 'jadwal', 'tugas', 'memori', 'vault', 'keuangan'];
+const TAB_ORDER = ['overview', 'jadwal', 'tugas', 'catatan', 'memori', 'vault', 'keuangan'];
 
 function moveSlider(sliderEl, activeBtn, animate = true) {
   if (!sliderEl || !activeBtn) return;
@@ -271,9 +278,16 @@ function switchTab(tabName) {
     history.replaceState(null, '', `#${target}`);
   }
 
-  if (target === 'overview') loadStatus();
-  if (target === 'jadwal') loadJadwal();
+  if (target === 'overview') {
+    loadStatus();
+    loadTelemetry();
+  }
+  if (target === 'jadwal') {
+    loadJadwal();
+    loadCalendarInfo();
+  }
   if (target === 'tugas') loadTugas();
+  if (target === 'catatan') loadCatatan();
   if (target === 'memori') {
     loadMemori();
     loadWishlist();
@@ -606,6 +620,7 @@ function renderOverview(data) {
   $('#overview-date-label').textContent = `${serverTime.display} • Sinkronisasi Real-Time`;
   $('#badge-jadwal').textContent = stats.jadwal_aktif;
   $('#badge-tugas').textContent = stats.tugas_aktif;
+  if ($('#badge-catatan')) $('#badge-catatan').textContent = stats.catatan_kuliah || 0;
   requestAnimationFrame(() => updateNavSliders(false));
 
   // KPI cards
@@ -616,7 +631,7 @@ function renderOverview(data) {
   $('#kpi-expense').textContent = formatSignedRupiah(overview.monthBalance ?? -overview.monthExpenseTotal);
   $('#kpi-expense-today').textContent = `Masuk: ${formatRupiah(overview.monthIncomeTotal || 0)} • Keluar: ${formatRupiah(overview.monthExpenseTotal || 0)}`;
   $('#kpi-total-records').textContent = stats.total_records;
-  $('#kpi-vault-sub').textContent = `${stats.memori_pacar} memori • ${stats.momen_wishlist} wishlist • ${stats.vault} vault`;
+  $('#kpi-vault-sub').textContent = `${stats.memori_pacar} memori • ${stats.catatan_kuliah || 0} catatan • ${stats.vault} vault`;
 
   // Dynamic Island & Overview WA Status
   const islandDot = $('#island-wa-dot');
@@ -2209,6 +2224,12 @@ async function runSpotlightSearch(q) {
         items: (res.vault || []).map((v) => ({ label: v.kata_kunci, meta: v.tipe })),
       },
       {
+        title: 'Catatan Kuliah & Ide',
+        tab: 'catatan',
+        icon: 'book-open',
+        items: (res.catatan || []).map((n) => ({ label: n.judul, meta: `${n.kategori} • ${n.sumber_tipe}` })),
+      },
+      {
         title: 'Keuangan',
         tab: 'keuangan',
         icon: 'wallet',
@@ -2294,6 +2315,409 @@ async function openAiPartnerRecap() {
   } catch (err) {
     $('#ai-insight-body').textContent = `Gagal menyusun rekap: ${err.message}`;
   }
+}
+
+/* ==================== SHARED FORMATTING HELPERS (4 FITUR BARU) ==================== */
+function renderInlineFormatted(escapedStr) {
+  return escapedStr.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+}
+
+function renderStructuredBulletsHtml(rawText, maxLines = 0) {
+  const allLines = String(rawText || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const lines = maxLines > 0 ? allLines.slice(0, maxLines) : allLines;
+  if (!lines.length) return '<p class="note-para muted">Tidak ada ringkasan.</p>';
+
+  const blocks = [];
+  let currentList = [];
+  const flushList = () => {
+    if (currentList.length) {
+      blocks.push(`<ul class="note-bullet-list">${currentList.map((li) => `<li>${li}</li>`).join('')}</ul>`);
+      currentList = [];
+    }
+  };
+
+  for (const line of lines) {
+    const bulletMatch = line.match(/^(?:[-*•]|\d+[.)])\s+(.+)$/);
+    if (bulletMatch) {
+      currentList.push(renderInlineFormatted(escapeHtml(bulletMatch[1])));
+    } else {
+      flushList();
+      blocks.push(`<p class="note-para">${renderInlineFormatted(escapeHtml(line))}</p>`);
+    }
+  }
+  flushList();
+
+  if (maxLines > 0 && allLines.length > maxLines) {
+    blocks.push(`<p class="text-xs muted">+${allLines.length - maxLines} poin lainnya...</p>`);
+  }
+  return blocks.join('');
+}
+
+function formatUptime(totalSeconds) {
+  const s = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+  const days = Math.floor(s / 86400);
+  const hours = Math.floor((s % 86400) / 3600);
+  const mins = Math.floor((s % 3600) / 60);
+  const secs = s % 60;
+  if (days > 0) return `${days}h ${hours}j ${mins}m`;
+  if (hours > 0) return `${hours}j ${mins}m`;
+  if (mins > 0) return `${mins}m ${secs}d`;
+  return `${secs} dtk`;
+}
+
+/* ==================== FITUR 1: CATATAN KULIAH & IDE ==================== */
+async function loadCatatan() {
+  try {
+    const params = new URLSearchParams();
+    if (state.catatanCategory && state.catatanCategory !== 'all') {
+      params.set('kategori', state.catatanCategory);
+    }
+    const q = $('#catatan-search-q')?.value.trim();
+    if (q) params.set('q', q);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    const data = await api(`/api/catatan${qs}`);
+    state.catatanList = Array.isArray(data?.items) ? data.items : [];
+    state.catatanCategories = Array.isArray(data?.categories) ? data.categories : [];
+    renderCatatanCategories();
+    renderCatatan();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+function renderCatatanCategories() {
+  const bar = $('#catatan-category-bar');
+  const dl = $('#catatan-kategori-suggestions');
+  if (bar) {
+    const cats = state.catatanCategories || [];
+    if (state.catatanCategory !== 'all' && !cats.some((c) => c.toLowerCase() === state.catatanCategory.toLowerCase())) {
+      state.catatanCategory = 'all';
+    }
+    const pills = [
+      `<button class="filter-pill ${state.catatanCategory === 'all' ? 'active' : ''}" data-catatan-cat="all" type="button">Semua</button>`,
+      ...cats.map(
+        (c) =>
+          `<button class="filter-pill ${state.catatanCategory.toLowerCase() === c.toLowerCase() ? 'active' : ''}" data-catatan-cat="${escapeHtml(c)}" type="button">${escapeHtml(c)}</button>`
+      ),
+    ];
+    bar.innerHTML = pills.join('');
+    bar.querySelectorAll('[data-catatan-cat]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.catatanCategory = btn.dataset.catatanCat || 'all';
+        loadCatatan();
+      });
+    });
+  }
+
+  if (dl) {
+    const defaults = ['Kriptografi', 'Sistem Terdistribusi', 'Pengolahan Citra Digital', 'Ide Proyek', 'Umum'];
+    const merged = [...new Set([...(state.catatanCategories || []), ...defaults])];
+    dl.innerHTML = merged.map((c) => `<option value="${escapeHtml(c)}"></option>`).join('');
+  }
+}
+
+function pickNoteSourceIcon(src) {
+  const s = String(src || 'TEXT').toUpperCase();
+  if (s === 'VOICE') return 'mic';
+  if (s === 'IMAGE') return 'image';
+  return 'file-text';
+}
+
+function renderCatatan() {
+  const wrap = $('#catatan-grid');
+  const empty = $('#catatan-empty');
+  if (!wrap || !empty) return;
+
+  if (!state.catatanList.length) {
+    wrap.innerHTML = '';
+    empty.classList.remove('hidden');
+    renderIcons();
+    return;
+  }
+
+  empty.classList.add('hidden');
+  wrap.innerHTML = state.catatanList
+    .map((n) => {
+      const dateShort = String(n.created_at || '').slice(0, 10) || '-';
+      const srcIcon = pickNoteSourceIcon(n.sumber_tipe);
+      return `
+      <article class="note-card">
+        <div class="note-card-head">
+          <span class="pill pill-blue">${escapeHtml(n.kategori || 'Umum')}</span>
+          <div class="memori-actions">
+            <span class="pill pill-muted mono">
+              <i data-lucide="${srcIcon}" class="icon-13"></i>
+              <span>${escapeHtml(n.sumber_tipe || 'TEXT')}</span>
+            </span>
+          </div>
+        </div>
+        <div class="note-title">${escapeHtml(n.judul)}</div>
+        <div class="note-bullets-preview">${renderStructuredBulletsHtml(n.ringkasan, 4)}</div>
+        <div class="note-card-footer">
+          <button class="btn btn-primary btn-sm" type="button" data-view-catatan="${n.id}">
+            <i data-lucide="book-open" class="icon-14"></i>
+            <span>Baca Detail</span>
+          </button>
+          <div class="memori-actions">
+            <span class="text-xs muted mono">${escapeHtml(dateShort)}</span>
+            <button class="icon-btn" type="button" title="Edit Catatan" aria-label="Edit Catatan" data-edit-catatan="${n.id}">
+              <i data-lucide="pencil" class="icon-14"></i>
+            </button>
+            <button class="icon-btn danger" type="button" title="Hapus Catatan" aria-label="Hapus Catatan" data-del-catatan="${n.id}">
+              <i data-lucide="trash-2" class="icon-14"></i>
+            </button>
+          </div>
+        </div>
+      </article>`;
+    })
+    .join('');
+
+  wrap.querySelectorAll('[data-view-catatan]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const item = state.catatanList.find((x) => x.id === Number(btn.dataset.viewCatatan));
+      if (item) openCatatanDetail(item);
+    });
+  });
+
+  wrap.querySelectorAll('[data-edit-catatan]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const item = state.catatanList.find((x) => x.id === Number(btn.dataset.editCatatan));
+      if (item) openCatatanEditModal(item);
+    });
+  });
+
+  wrap.querySelectorAll('[data-del-catatan]').forEach((btn) => {
+    btn.addEventListener('click', () => deleteCatatanById(Number(btn.dataset.delCatatan)));
+  });
+
+  renderIcons();
+}
+
+function openCatatanDetail(item) {
+  state.activeCatatanDetail = item;
+  $('#catatan-detail-title').textContent = item.judul || 'Detail Catatan';
+  const metaEl = $('#catatan-detail-meta');
+  if (metaEl) {
+    const srcIcon = pickNoteSourceIcon(item.sumber_tipe);
+    metaEl.innerHTML = `
+      <span class="pill pill-blue">${escapeHtml(item.kategori || 'Umum')}</span>
+      <span class="pill pill-muted mono"><i data-lucide="${srcIcon}" class="icon-13"></i><span>${escapeHtml(item.sumber_tipe || 'TEXT')}</span></span>
+      <span class="text-xs muted mono">${escapeHtml(String(item.created_at || '').slice(0, 16))}</span>
+    `;
+  }
+  const bodyEl = $('#catatan-detail-body');
+  if (bodyEl) {
+    bodyEl.innerHTML = renderStructuredBulletsHtml(item.ringkasan, 0);
+  }
+  openModal('modal-catatan-detail');
+}
+
+function openCatatanEditModal(item) {
+  $('#modal-catatan-title').textContent = 'Edit Catatan Kuliah / Ide';
+  $('#form-catatan').reset();
+  $('#catatan-id').value = item.id;
+  $('#catatan-judul').value = item.judul || '';
+  $('#catatan-kategori').value = item.kategori || 'Umum';
+  $('#catatan-sumber').value = item.sumber_tipe || 'TEXT';
+  $('#catatan-ringkasan').value = item.ringkasan || '';
+  openModal('modal-catatan');
+}
+
+async function deleteCatatanById(id) {
+  if (!id || !confirm('Hapus catatan ini?')) return;
+  try {
+    await api(`/api/catatan/${id}`, { method: 'DELETE' });
+    toast('Catatan dihapus.', 'success');
+    if (state.activeCatatanDetail?.id === id) {
+      state.activeCatatanDetail = null;
+      closeModal('modal-catatan-detail');
+    }
+    loadCatatan();
+    loadStatus();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+/* ==================== FITUR 2: SYSTEM & AI TELEMETRY ==================== */
+async function loadTelemetry() {
+  try {
+    const data = await api('/api/telemetry');
+    state.telemetryData = data;
+    renderTelemetry(data);
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+function renderTelemetry(data) {
+  if (!data) return;
+  const ai = data.ai || {};
+  const srv = data.server || {};
+  const gem = ai.gemini || { todayRequests: 0, dailyQuota: 1500, pct: 0, avgLatencyMs: 0 };
+  const grq = ai.groq || { todayRequests: 0, dailyQuota: 1000, pct: 0, avgLatencyMs: 0 };
+
+  if ($('#telemetry-model-sub')) {
+    $('#telemetry-model-sub').textContent = `Primary: ${ai.primaryGeminiModel || 'gemini-3.8-flash'} • Aktif: ${ai.activeModel || '-'} • Groq Companion`;
+  }
+  if ($('#tel-gemini-model')) {
+    $('#tel-gemini-model').textContent = `(${ai.primaryGeminiModel || 'gemini-3.8-flash'})`;
+  }
+  if ($('#tel-gemini-meta')) {
+    $('#tel-gemini-meta').textContent = `${gem.todayRequests} / ${gem.dailyQuota} req (${gem.pct}%) • ${gem.avgLatencyMs} ms`;
+  }
+  if ($('#tel-gemini-bar')) {
+    $('#tel-gemini-bar').style.width = `${Math.min(100, Math.max(gem.todayRequests > 0 ? 2 : 0, gem.pct))}%`;
+    $('#tel-gemini-bar').className = `budget-bar-fill ${gem.pct >= 95 ? 'is-over' : gem.pct >= 80 ? 'is-warn' : ''}`;
+  }
+
+  if ($('#tel-groq-meta')) {
+    $('#tel-groq-meta').textContent = `${grq.todayRequests} / ${grq.dailyQuota} req (${grq.pct}%) • ${grq.avgLatencyMs} ms`;
+  }
+  if ($('#tel-groq-bar')) {
+    $('#tel-groq-bar').style.width = `${Math.min(100, Math.max(grq.todayRequests > 0 ? 2 : 0, grq.pct))}%`;
+    $('#tel-groq-bar').className = `budget-bar-fill ${grq.pct >= 95 ? 'is-over' : grq.pct >= 80 ? 'is-warn' : ''}`;
+  }
+
+  if ($('#tel-uptime')) $('#tel-uptime').textContent = formatUptime(srv.uptimeSeconds);
+  if ($('#tel-ram')) $('#tel-ram').textContent = formatFileSize(srv.ramRssBytes) || '--';
+  if ($('#tel-db-size')) $('#tel-db-size').textContent = formatFileSize(srv.dbSizeBytes) || '--';
+  if ($('#tel-fallback')) {
+    if (ai.lastFallback) {
+      $('#tel-fallback').textContent = `${ai.lastFallback.provider} (${String(ai.lastFallback.created_at || '').slice(11, 16) || ai.lastFallback.tanggal})`;
+    } else {
+      $('#tel-fallback').textContent = 'Stabil (0 fallback)';
+    }
+  }
+}
+
+async function runAiEngineTest() {
+  const btn = $('#btn-test-ai-engine');
+  const box = $('#telemetry-test-result');
+  if (btn) btn.disabled = true;
+  if (box) {
+    box.classList.remove('hidden');
+    box.innerHTML = '<div class="text-sm muted">Menguji jalur koneksi Gemini (gemini-3.8-flash) dan Groq secara paralel...</div>';
+  }
+  try {
+    const res = await api('/api/telemetry/test-ai', { method: 'POST' });
+    if (res.telemetry) {
+      state.telemetryData = res.telemetry;
+      renderTelemetry(res.telemetry);
+    }
+    const t = res.test || {};
+    const g = t.gemini || {};
+    const q = t.groq || {};
+    if (box) {
+      box.innerHTML = `
+        <div class="smart-planner-out-head" style="padding-bottom:8px;">
+          <div class="card-title-group">
+            <span class="pill ${t.fallbackReady ? 'pill-green' : 'pill-amber'}">${t.fallbackReady ? 'Dual-Engine Siap' : 'Parsial / Fallback'}</span>
+            <span class="text-xs muted">${escapeHtml(t.summary || '')}</span>
+          </div>
+          <span class="text-xs muted mono">${escapeHtml(t.testedAt || '')}</span>
+        </div>
+        <div class="telemetry-test-grid">
+          <div class="telemetry-test-row">
+            <div class="telemetry-bar-head">
+              <strong class="text-sm">Gemini</strong>
+              <span class="pill ${g.ok ? 'pill-green' : 'pill-red'} mono">${escapeHtml(g.status || 'ERR')} • ${Number(g.latencyMs) || 0} ms</span>
+            </div>
+            <div class="text-xs muted mono">${escapeHtml(g.model || 'gemini-3.8-flash')}</div>
+            ${g.error ? `<div class="text-xs muted">${escapeHtml(g.error)}</div>` : ''}
+          </div>
+          <div class="telemetry-test-row">
+            <div class="telemetry-bar-head">
+              <strong class="text-sm">Groq</strong>
+              <span class="pill ${q.ok ? 'pill-green' : 'pill-red'} mono">${escapeHtml(q.status || 'ERR')} • ${Number(q.latencyMs) || 0} ms</span>
+            </div>
+            <div class="text-xs muted mono">${escapeHtml(q.model || '-')}</div>
+            ${q.error ? `<div class="text-xs muted">${escapeHtml(q.error)}</div>` : ''}
+          </div>
+        </div>
+      `;
+    }
+    toast('Pengujian AI Engine selesai.', t.fallbackReady ? 'success' : 'info');
+  } catch (err) {
+    if (box) {
+      box.innerHTML = `<div class="text-sm muted">Pengujian gagal: ${escapeHtml(err.message)}</div>`;
+    }
+    toast(err.message, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/* ==================== FITUR 3: SMART DATE & GIFT ASSISTANT ==================== */
+async function generateSmartPartnerRec(mode = 'date') {
+  const budgetVal = $('#pacar-rec-budget')?.value.trim() || '';
+  const box = $('#pacar-rec-result');
+  const badge = $('#pacar-rec-badge');
+  const meta = $('#pacar-rec-meta');
+  const body = $('#pacar-rec-body');
+  const btnDate = $('#btn-gen-date-ideas');
+  const btnGift = $('#btn-gen-gift-ideas');
+
+  if (btnDate) btnDate.disabled = true;
+  if (btnGift) btnGift.disabled = true;
+
+  const modeLabel = mode === 'gift' ? 'Rekomendasi Hadiah dari Wishlist' : 'Ide Kencan Weekend';
+  if (box) box.classList.remove('hidden');
+  if (badge) badge.textContent = modeLabel;
+  if (meta) meta.textContent = 'Menganalisis 15 memori terbaru & wishlist aktif...';
+  if (body) body.innerHTML = '<p class="note-para muted">Menyusun rekomendasi personal dari database...</p>';
+
+  try {
+    const res = await api('/api/pacar/rekomendasi', {
+      method: 'POST',
+      body: JSON.stringify({
+        mode,
+        budget: budgetVal ? Number(budgetVal) : null,
+      }),
+    });
+    state.lastPacarRecText = res.content || '';
+    const budgetLabel = res.budget ? ` • Budget ${formatRupiah(res.budget)}` : '';
+    if (meta) {
+      meta.textContent = `${res.memoriesUsed || 0} memori • ${res.wishlistsUsed || 0} wishlist aktif${budgetLabel}`;
+    }
+    if (body) {
+      body.innerHTML = renderStructuredBulletsHtml(res.content || 'Belum ada hasil rekomendasi.', 0);
+    }
+    renderIcons();
+  } catch (err) {
+    if (meta) meta.textContent = 'Gagal memuat rekomendasi';
+    if (body) body.innerHTML = `<p class="note-para muted">${escapeHtml(err.message)}</p>`;
+    toast(err.message, 'error');
+  } finally {
+    if (btnDate) btnDate.disabled = false;
+    if (btnGift) btnGift.disabled = false;
+  }
+}
+
+/* ==================== FITUR 4: CALENDAR SYNC (.ICS) ==================== */
+async function loadCalendarInfo() {
+  try {
+    const info = await api('/api/calendar/info');
+    state.calendarInfo = info;
+    renderCalendarInfo(info);
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+function renderCalendarInfo(info) {
+  if (!info) return;
+  const fullUrl = `${window.location.origin}${info.path || '/api/calendar.ics'}`;
+  const input = $('#ics-feed-url-input');
+  const dl = $('#btn-download-ics');
+  const pill = $('#ics-sync-counts');
+
+  if (input) input.value = fullUrl;
+  if (dl) dl.href = info.path || '/api/calendar.ics';
+  if (pill) pill.textContent = `${info.jadwalCount || 0} jadwal • ${info.tugasCount || 0} tugas`;
 }
 
 /* ==================== FORM & ACTION BINDINGS ==================== */
@@ -2908,6 +3332,107 @@ function bindFormsAndActions() {
       loadAuditLogs();
     });
   });
+
+  // FITUR 1: Catatan Kuliah & Ide
+  let catatanSearchTimer;
+  $('#catatan-search-q')?.addEventListener('input', () => {
+    clearTimeout(catatanSearchTimer);
+    catatanSearchTimer = setTimeout(loadCatatan, 220);
+  });
+
+  $('#btn-open-catatan-modal')?.addEventListener('click', () => {
+    $('#modal-catatan-title').textContent = 'Tambah Catatan Kuliah / Ide';
+    $('#form-catatan').reset();
+    $('#catatan-id').value = '';
+    $('#catatan-sumber').value = 'TEXT';
+    openModal('modal-catatan');
+  });
+
+  $('#form-catatan')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const id = $('#catatan-id').value;
+    const body = {
+      judul: $('#catatan-judul').value.trim(),
+      kategori: $('#catatan-kategori').value.trim() || 'Umum',
+      sumber_tipe: $('#catatan-sumber').value || 'TEXT',
+      ringkasan: $('#catatan-ringkasan').value.trim(),
+    };
+    try {
+      if (id) {
+        await api(`/api/catatan/${id}`, { method: 'PUT', body: JSON.stringify(body) });
+        toast('Catatan berhasil diperbarui.', 'success');
+      } else {
+        await api('/api/catatan', { method: 'POST', body: JSON.stringify(body) });
+        toast('Catatan baru disimpan.', 'success');
+      }
+      closeModal('modal-catatan');
+      loadCatatan();
+      loadStatus();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+
+  $('#btn-copy-catatan-detail')?.addEventListener('click', async () => {
+    const note = state.activeCatatanDetail;
+    if (!note) return;
+    try {
+      await navigator.clipboard.writeText(`${note.judul} [${note.kategori}]\n\n${note.ringkasan}`);
+      toast('Ringkasan catatan disalin ke clipboard.', 'success');
+    } catch {
+      toast('Gagal menyalin otomatis.', 'error');
+    }
+  });
+
+  $('#btn-edit-catatan-detail')?.addEventListener('click', () => {
+    const note = state.activeCatatanDetail;
+    if (!note) return;
+    closeModal('modal-catatan-detail');
+    openCatatanEditModal(note);
+  });
+
+  $('#btn-del-catatan-detail')?.addEventListener('click', () => {
+    if (state.activeCatatanDetail) deleteCatatanById(state.activeCatatanDetail.id);
+  });
+
+  // FITUR 2: System & AI Telemetry
+  $('#btn-refresh-telemetry')?.addEventListener('click', async () => {
+    await loadTelemetry();
+    toast('Telemetry server & AI diperbarui.', 'info');
+  });
+  $('#btn-test-ai-engine')?.addEventListener('click', runAiEngineTest);
+
+  // FITUR 3: Smart Date & Gift Assistant
+  $('#btn-gen-date-ideas')?.addEventListener('click', () => generateSmartPartnerRec('date'));
+  $('#btn-gen-gift-ideas')?.addEventListener('click', () => generateSmartPartnerRec('gift'));
+  $('#btn-copy-pacar-rec')?.addEventListener('click', async () => {
+    if (!state.lastPacarRecText) return;
+    try {
+      await navigator.clipboard.writeText(state.lastPacarRecText);
+      toast('Rekomendasi AI berhasil disalin.', 'success');
+    } catch {
+      toast('Gagal menyalin otomatis.', 'error');
+    }
+  });
+  $('#btn-clear-pacar-rec')?.addEventListener('click', () => {
+    $('#pacar-rec-result')?.classList.add('hidden');
+  });
+
+  // FITUR 4: Calendar Sync (.ics)
+  $('#btn-copy-ics-url')?.addEventListener('click', async () => {
+    const url = $('#ics-feed-url-input')?.value || '';
+    if (!url || !url.startsWith('http')) {
+      toast('Link kalender belum siap.', 'error');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      toast('Link Kalender (.ics) berhasil disalin.', 'success');
+    } catch {
+      $('#ics-feed-url-input')?.select();
+      toast('Salin manual link yang sudah ditandai.', 'info');
+    }
+  });
 }
 
 /* ==================== SECURITY & ACCESS AUDIT LOGS ==================== */
@@ -3018,8 +3543,14 @@ function connectLiveEvents() {
       const payload = JSON.parse(ev.data || '{}');
       const mod = payload.module;
       loadStatus();
-      if (mod === 'jadwal') loadJadwal();
-      else if (mod === 'tugas') loadTugas();
+      if (mod === 'jadwal') {
+        loadJadwal();
+        loadCalendarInfo();
+      } else if (mod === 'tugas') {
+        loadTugas();
+        loadCalendarInfo();
+      } else if (mod === 'catatan') loadCatatan();
+      else if (mod === 'telemetry') loadTelemetry();
       else if (mod === 'memori') loadMemori();
       else if (mod === 'wishlist') loadWishlist();
       else if (mod === 'vault') loadVault();
@@ -3037,6 +3568,7 @@ function connectLiveEvents() {
         const labels = {
           jadwal: 'Jadwal baru masuk dari WhatsApp.',
           tugas: 'Tugas diperbarui dari WhatsApp.',
+          catatan: 'Catatan kuliah/ide baru masuk dari WhatsApp.',
           memori: 'Memori baru masuk dari WhatsApp.',
           wishlist: 'Wishlist atau momen baru dari WhatsApp.',
           vault: 'Item Vault baru masuk dari WhatsApp.',
@@ -3056,11 +3588,15 @@ function connectLiveEvents() {
 function refreshActiveTab() {
   loadStatus();
   if (state.activeTab === 'overview') {
+    loadTelemetry();
     loadHabits();
     loadReminders();
     loadFocus();
-  } else if (state.activeTab === 'jadwal') loadJadwal();
-  else if (state.activeTab === 'tugas') loadTugas();
+  } else if (state.activeTab === 'jadwal') {
+    loadJadwal();
+    loadCalendarInfo();
+  } else if (state.activeTab === 'tugas') loadTugas();
+  else if (state.activeTab === 'catatan') loadCatatan();
   else if (state.activeTab === 'memori') {
     loadMemori();
     loadWishlist();
@@ -3072,11 +3608,14 @@ function refreshActiveTab() {
 async function refreshAll() {
   await Promise.all([
     loadStatus(),
+    loadTelemetry(),
     loadHabits(),
     loadReminders(),
     loadFocus(),
     loadJadwal(),
+    loadCalendarInfo(),
     loadTugas(),
+    loadCatatan(),
     loadMemori(),
     loadWishlist(),
     loadVault(),

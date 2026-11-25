@@ -6,14 +6,18 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   ALLOWED_CATEGORIES,
+  DB_PATH,
   INCOME_CATEGORIES,
   MEMORI_UPLOADS_DIR,
   PROJECT_ROOT,
   VAULT_UPLOADS_DIR,
+  aiLogRepo,
   auditRepo,
   budgetRepo,
+  catatanRepo,
   createConsistentBackup,
   focusRepo,
+  getCalendarFeedToken,
   getDatabaseStats,
   globalSearch,
   habitRepo,
@@ -30,12 +34,18 @@ import {
 } from '../config/db.js';
 import { recordAccessEvent } from '../services/audit.js';
 import { checkBudgetThresholds } from '../services/budget.js';
+import { generateCalendarIcs } from '../services/calendar.js';
 import { emitDataChange, onDataChange } from '../services/events.js';
 import {
+  PRIMARY_GEMINI_MODEL,
   generateMonthlyPartnerRecap,
   generatePartnerIdeas,
+  generatePartnerRecommendation,
   getActiveModelName,
+  isGeminiApiConfigured,
   isGeminiConfigured,
+  isGroqConfigured,
+  testAiEngines,
 } from '../services/gemini.js';
 import { isWebPushConfigured, sendDualNotification } from '../services/notifier.js';
 import { reloadScheduler, runMorningBriefing, runWeeklyBackup } from '../services/scheduler.js';
@@ -130,6 +140,30 @@ router.post('/auth/logout', (req, res) => {
   recordAccessEvent(req, 'LOGOUT');
   res.setHeader('Set-Cookie', 'assistant_auth=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
   res.json({ ok: true });
+});
+
+/* ==================== FITUR 4: PUBLIC / TOKEN-GATED ICS CALENDAR FEED ==================== */
+router.get('/calendar.ics', (req, res) => {
+  const pin = getConfiguredPin();
+  const expectedToken = getCalendarFeedToken();
+  const suppliedToken = String(req.query.token || '').trim();
+  const authorized =
+    !pin ||
+    isRequestAuthorized(req) ||
+    (Boolean(suppliedToken) && safeEqual(suppliedToken, expectedToken));
+
+  if (!authorized) {
+    return res.status(401).json({ error: 'Token kalender (.ics) tidak valid.' });
+  }
+
+  const schedules = jadwalRepo.list({ aktif: 1 });
+  const tasks = tugasRepo.list({ selesai: 0 });
+  const icsBody = generateCalendarIcs({ schedules, tasks });
+
+  res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
+  res.setHeader('Content-Disposition', 'inline; filename="personal-assistant.ics"');
+  res.setHeader('Cache-Control', 'no-cache, max-age=0');
+  return res.send(icsBody);
 });
 
 // Protect all remaining /api/* routes when WEB_PIN is configured
@@ -900,6 +934,152 @@ router.delete('/audit-logs', (_req, res) => {
   auditRepo.clear();
   emitDataChange('audit', 'api');
   res.json({ ok: true });
+});
+
+/* ==================== FITUR 1: CATATAN KULIAH & IDE (VOICE-TO-NOTES) ==================== */
+router.get('/catatan', (req, res) => {
+  const items = catatanRepo.list({
+    kategori: req.query.kategori,
+    q: req.query.q,
+  });
+  const categories = catatanRepo.getCategories();
+  res.json({ items, categories, total: items.length });
+});
+
+router.post('/catatan', (req, res) => {
+  try {
+    const created = catatanRepo.create(req.body || {});
+    emitDataChange('catatan', 'api');
+    res.status(201).json(created);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+function handleCatatanUpdate(req, res) {
+  try {
+    const updated = catatanRepo.update(req.params.id, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'Catatan tidak ditemukan.' });
+    emitDataChange('catatan', 'api');
+    return res.json(updated);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+}
+
+router.put('/catatan/:id', handleCatatanUpdate);
+router.patch('/catatan/:id', handleCatatanUpdate);
+
+router.delete('/catatan/:id', (req, res) => {
+  const deleted = catatanRepo.remove(req.params.id);
+  if (!deleted) return res.status(404).json({ error: 'Catatan tidak ditemukan.' });
+  emitDataChange('catatan', 'api');
+  return res.json({ ok: true });
+});
+
+/* ==================== FITUR 2: SYSTEM & AI TELEMETRY ==================== */
+function getDbSizeBytes() {
+  let total = 0;
+  for (const p of [DB_PATH, `${DB_PATH}-wal`]) {
+    try {
+      if (fs.existsSync(p)) total += fs.statSync(p).size;
+    } catch {
+      // ignore stat errors
+    }
+  }
+  return total;
+}
+
+function buildTelemetryPayload() {
+  const aiToday = aiLogRepo.getTodayTelemetry();
+  const mem = process.memoryUsage();
+  return {
+    ai: {
+      ...aiToday,
+      activeModel: getActiveModelName(),
+      primaryGeminiModel: PRIMARY_GEMINI_MODEL,
+      geminiConfigured: isGeminiApiConfigured(),
+      groqConfigured: isGroqConfigured(),
+    },
+    server: {
+      uptimeSeconds: Math.round(process.uptime()),
+      ramRssBytes: mem.rss,
+      ramHeapBytes: mem.heapUsed,
+      ramHeapTotalBytes: mem.heapTotal,
+      dbSizeBytes: getDbSizeBytes(),
+      nodeVersion: process.version,
+    },
+  };
+}
+
+router.get('/telemetry', (_req, res) => {
+  res.json(buildTelemetryPayload());
+});
+
+router.post('/telemetry/test-ai', async (_req, res) => {
+  try {
+    const test = await testAiEngines();
+    emitDataChange('telemetry', 'api');
+    res.json({
+      test,
+      telemetry: buildTelemetryPayload(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ==================== FITUR 3: SMART DATE & GIFT PLANNER ==================== */
+router.post('/pacar/rekomendasi', async (req, res) => {
+  try {
+    const modeRaw = String(req.body?.mode || 'auto').toLowerCase();
+    const mode = ['date', 'gift', 'auto'].includes(modeRaw) ? modeRaw : 'auto';
+    const rawBudget = req.body?.budget !== undefined && req.body?.budget !== null && req.body?.budget !== ''
+      ? Number(String(req.body.budget).replace(/[^\d]/g, ''))
+      : null;
+    const budget = Number.isFinite(rawBudget) && rawBudget > 0 ? rawBudget : null;
+    const prompt = String(req.body?.prompt || '').trim();
+
+    const memories = memoriRepo.list({ limit: 15 });
+    const unfulfilledAll = wishlistRepo.list().filter((item) => !item.terpenuhi);
+    const wishlists = unfulfilledAll.filter((item) => item.tipe === 'WISHLIST');
+    const moments = unfulfilledAll.filter((item) => item.tipe === 'MOMEN');
+
+    const content = await generatePartnerRecommendation({
+      prompt,
+      mode,
+      budget,
+      memories,
+      wishlists,
+      moments,
+      noEmoji: true,
+    });
+
+    emitDataChange('telemetry', 'api');
+    res.json({
+      content,
+      mode,
+      budget,
+      memoriesUsed: memories.length,
+      wishlistsUsed: wishlists.length,
+      momentsUsed: moments.length,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ==================== FITUR 4: CALENDAR SYNC METADATA ==================== */
+router.get('/calendar/info', (_req, res) => {
+  const token = getCalendarFeedToken();
+  const schedules = jadwalRepo.list({ aktif: 1 });
+  const tasks = tugasRepo.list({ selesai: 0 });
+  res.json({
+    token,
+    path: `/api/calendar.ics?token=${encodeURIComponent(token)}`,
+    jadwalCount: schedules.length,
+    tugasCount: tasks.length,
+  });
 });
 
 /* ==================== API ERROR HANDLER ==================== */

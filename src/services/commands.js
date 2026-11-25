@@ -4,6 +4,7 @@ import {
   MEMORI_UPLOADS_DIR,
   VAULT_UPLOADS_DIR,
   auditRepo,
+  catatanRepo,
   focusRepo,
   habitRepo,
   jadwalRepo,
@@ -32,7 +33,7 @@ import {
 } from '../utils/time.js';
 import { checkBudgetThresholds } from './budget.js';
 import { emitDataChange } from './events.js';
-import { generateMonthlyPartnerRecap, generatePartnerIdeas } from './gemini.js';
+import { generateMonthlyPartnerRecap, generatePartnerRecommendation } from './gemini.js';
 import { getLastReminder } from './notifier.js';
 
 function extensionFromMime(mimeType, fallbackFileName = '') {
@@ -143,6 +144,11 @@ function buildHelpText() {
     '• `/t` — Lihat semua tugas aktif',
     '• `/t <YYYY-MM-DD> [HH:MM] <matkul> | <judul>`',
     '• `/td <kata kunci>` — Tandai tugas selesai',
+    '',
+    '📚 *Catatan Kuliah & Ide*',
+    '• `/n` — Lihat daftar catatan terbaru',
+    '• `/n cari <topik>` — Cari catatan kuliah/ide',
+    '• `/n <Kategori> | <Judul> | <Ringkasan>` — Tambah catatan',
     '',
     '💸 *Keuangan*',
     '• `/k <item> <nominal>, ...` — Catat pengeluaran',
@@ -854,14 +860,86 @@ export async function handleSlashCommand({
       };
     }
 
+    /* ==================== CATATAN KULIAH & IDE (/n) ==================== */
+    case 'n':
+    case 'catatan': {
+      if (!args) {
+        const list = catatanRepo.list();
+        if (!list.length) {
+          return {
+            text: '📚 Belum ada catatan kuliah/ide.\nTambah cepat dengan `/n Kriptografi | Enkripsi AES | - Poin 1\\n- Poin 2` atau kirim Voice Note ke chat ini.',
+          };
+        }
+        const lines = list
+          .slice(0, 10)
+          .map((n, i) => `${i + 1}. *[${n.kategori}]* *${n.judul}* _(${n.sumber_tipe})_`);
+        return {
+          text: `📚 *Catatan Kuliah & Ide (${list.length}):*\n\n${lines.join('\n')}\n\n_Ketik \`/n cari <kata kunci>\` untuk membaca ringkasan._`,
+        };
+      }
+
+      const searchCmd = args.match(/^(?:cari|search)\s+([\s\S]+)$/i);
+      if (searchCmd) {
+        const query = searchCmd[1].trim();
+        const matches = catatanRepo.search(query);
+        if (!matches.length) {
+          return { text: `📚 Tidak ditemukan catatan yang cocok dengan *"${query}"*.` };
+        }
+        const blocks = matches.slice(0, 4).map((n, i) => {
+          const preview = n.ringkasan.length > 400 ? `${n.ringkasan.slice(0, 400)}...` : n.ringkasan;
+          return `${i + 1}. *${n.judul}* _[${n.kategori} · ${n.sumber_tipe}]_\n${preview}`;
+        });
+        return {
+          text: `📚 *Hasil Pencarian Catatan "${query}" (${matches.length}):*\n\n${blocks.join('\n\n')}`,
+        };
+      }
+
+      const parts = args.split('|').map((s) => s.trim()).filter(Boolean);
+      if (parts.length < 2) {
+        return {
+          text: 'Format: `/n <Kategori> | <Judul> | <Ringkasan>` atau `/n <Judul> | <Ringkasan>` atau `/n cari <kata kunci>`.',
+        };
+      }
+
+      let kategori = 'Umum';
+      let judul = '';
+      let ringkasan = '';
+      if (parts.length >= 3) {
+        kategori = parts[0];
+        judul = parts[1];
+        ringkasan = parts.slice(2).join(' | ');
+      } else {
+        judul = parts[0];
+        ringkasan = parts[1];
+      }
+
+      const saved = catatanRepo.create({
+        judul,
+        kategori,
+        ringkasan,
+        sumber_tipe: 'TEXT',
+      });
+      emitDataChange('catatan', 'whatsapp');
+      return {
+        text: `📚 *Catatan Tersimpan:*\n• Judul: *${saved.judul}*\n• Kategori: *${saved.kategori}*\n\n${saved.ringkasan}`,
+      };
+    }
+
     /* ==================== AI PARTNER IDEAS & MONTHLY RECAP ==================== */
     case 'ide': {
       const prompt = args || 'Berikan rekomendasi ide kado dan ide date untuk pacar saya';
-      const memories = memoriRepo.list({ limit: 25 });
-      const wishlists = wishlistRepo.list({ tipe: 'WISHLIST' });
-      const moments = wishlistRepo.getUpcomingMoments(60, now);
-      const answer = await generatePartnerIdeas(prompt, { memories, wishlists, moments }, now);
-      return { text: `💝 *Rekomendasi Personal untuk Pacarmu:*\n\n${answer}` };
+      const memories = memoriRepo.list({ limit: 15 });
+      const unfulfilledAll = wishlistRepo.list().filter((item) => !item.terpenuhi);
+      const wishlists = unfulfilledAll.filter((item) => item.tipe === 'WISHLIST');
+      const moments = unfulfilledAll.filter((item) => item.tipe === 'MOMEN');
+      const isGift = /\b(kado|hadiah|gift|wishlist)\b/i.test(prompt);
+      const isDate = /\b(date|kencan|weekend|jalan)\b/i.test(prompt);
+      const mode = isGift && !isDate ? 'gift' : isDate && !isGift ? 'date' : 'auto';
+      const answer = await generatePartnerRecommendation(
+        { prompt, mode, memories, wishlists, moments, noEmoji: false },
+        now
+      );
+      return { text: `💝 *Smart Date & Gift Assistant:*\n\n${answer}` };
     }
 
     case 'rekappacar': {
