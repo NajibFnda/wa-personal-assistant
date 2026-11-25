@@ -4,6 +4,16 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" id="meta-theme-color" content="#f5f5f7" />
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('assistant_sonoma_theme') === 'dark' ? 'dark' : 'light';
+        document.documentElement.dataset.theme = t;
+        var m = document.getElementById('meta-theme-color');
+        if (m) m.setAttribute('content', t === 'dark' ? '#161618' : '#f5f5f7');
+      } catch (e) {}
+    })();
+  </script>
   <meta name="description" content="All-in-One Personal Assistant — WhatsApp Multimodal Bot + Gemini AI + Web Dashboard" />
   <title>Personal Assistant</title>
   <link rel="manifest" href="/manifest.json" />
@@ -72,6 +82,9 @@
           <div class="topbar-icon-group">
             <button id="btn-open-spotlight" class="island-icon-btn icon-only" type="button" title="Pencarian Cepat (Ctrl+K)" aria-label="Pencarian Cepat">
               <i data-lucide="search" class="icon-15"></i>
+            </button>
+            <button id="btn-toggle-theme" class="island-icon-btn icon-only" type="button" title="Ubah ke Mode Gelap" aria-label="Ubah Tema Terang atau Gelap">
+              <i data-lucide="moon" class="icon-15"></i>
             </button>
             <button class="island-icon-btn icon-only" type="button" data-open-notif-settings title="Pengaturan Waktu Notifikasi" aria-label="Pengaturan Waktu Notifikasi">
               <i data-lucide="sliders-horizontal" class="icon-15"></i>

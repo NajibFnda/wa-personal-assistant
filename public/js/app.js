@@ -65,21 +65,40 @@ const CATEGORY_COLORS_LIGHT = {
 };
 
 function getCurrentTheme() {
-  return 'light';
+  return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
 }
 
 function getCategoryColors() {
-  return CATEGORY_COLORS_LIGHT;
+  return getCurrentTheme() === 'dark' ? CATEGORY_COLORS_DARK : CATEGORY_COLORS_LIGHT;
 }
 
-function applyTheme() {
-  document.documentElement.dataset.theme = 'light';
+function applyTheme(theme, persist = true) {
+  const next = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = next;
   const meta = $('#meta-theme-color');
-  if (meta) meta.setAttribute('content', '#f5f5f7');
+  if (meta) meta.setAttribute('content', next === 'dark' ? '#161618' : '#f5f5f7');
+  if (persist) {
+    try {
+      localStorage.setItem('assistant_sonoma_theme', next);
+    } catch {
+      // ignore storage errors
+    }
+  }
+  const btn = $('#btn-toggle-theme');
+  if (btn) {
+    const isDark = next === 'dark';
+    btn.title = isDark ? 'Ubah ke macOS Sonoma Light' : 'Ubah ke macOS Sonoma Dark';
+    btn.setAttribute('aria-label', btn.title);
+    btn.innerHTML = `<i data-lucide="${isDark ? 'sun' : 'moon'}" class="icon-15"></i>`;
+    renderIcons();
+  }
 }
 
 function initThemeToggle() {
-  applyTheme();
+  applyTheme(getCurrentTheme(), false);
+  $('#btn-toggle-theme')?.addEventListener('click', () => {
+    applyTheme(getCurrentTheme() === 'dark' ? 'light' : 'dark', true);
+  });
 }
 
 const EXPENSE_CATEGORIES = ['Makan & Minum', 'Transportasi', 'Akademik', 'Hiburan', 'Lainnya'];
