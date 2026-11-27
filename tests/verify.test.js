@@ -974,5 +974,55 @@ describe('All-in-One Personal Assistant End-to-End Verification (Isolated Test D
 
     const slashOk = await handleSlashCommand({ text: '/ok', now: new Date('2026-11-25T14:05:00+07:00') });
     assert.match(slashOk.text, /Tidak ada pengingat presensi/);
+
+    // 9. Distinguish Normal Alarm vs Presensi Alarm (normal alarm fires ONCE, NEVER repeats every 20m or asks "ok")
+    const { tryLocalFastIntent } = await import('../src/services/gemini.js');
+    const fri = new Date('2026-11-27T10:00:00+07:00');
+    const normalAlarmIntent = tryLocalFastIntent({
+      text: 'pasang alarm hari ini jam 14:00 Mulai Percobaan Unet/DeepLab',
+      hasMedia: false,
+      now: fri,
+    });
+    assert.equal(normalAlarmIntent?.intent, 'TAMBAH_JADWAL');
+    assert.equal(normalAlarmIntent?.payload?.is_presensi, false);
+
+    const normalExec = await executeIntent({
+      result: normalAlarmIntent,
+      rawText: 'pasang alarm hari ini jam 14:00 Mulai Percobaan Unet/DeepLab',
+      now: fri,
+    });
+    assert.match(normalExec.text, /Alarm Biasa/);
+
+    const normalRow = jadwalRepo.list().find((j) => /Unet\/DeepLab/i.test(j.nama));
+    assert.ok(normalRow);
+    assert.equal(normalRow.repeat_until_ok, 0);
+
+    // Firing normal alarm at 14:00 sends 1x alarm message and creates ZERO presensi_pending
+    const beforeNormalWa = sentWaMessages.length;
+    const firedNormal = await checkSchedules(new Date('2026-11-27T14:00:00+07:00'));
+    assert.equal(firedNormal, 1);
+    assert.equal(presensiPendingRepo.listActive().length, 0);
+    const lastNormalMsg = sentWaMessages[sentWaMessages.length - 1];
+    assert.ok(sentWaMessages.length === beforeNormalWa + 1);
+    assert.doesNotMatch(lastNormalMsg, /presensi|balas \*"ok"\*/i);
+    assert.equal(await checkPendingPresensi(new Date('2026-11-27T14:20:00+07:00')), 0);
+
+    // Explicit presensi one-shot still repeats until "ok"
+    const presensiOneShot = jadwalRepo.create({
+      nama: 'Presensi Pengganti Data Mining',
+      tanggal: '2026-11-27',
+      jam: '15:00',
+      is_rutin: 0,
+    });
+    assert.equal(presensiOneShot.repeat_until_ok, 1);
+
+    // Routine non-class personal alarm (e.g. "Alarm Bangun Pagi") defaults to normal alarm (repeat_until_ok = 0)
+    const routinePersonalAlarm = jadwalRepo.create({
+      nama: 'Alarm Bangun Pagi',
+      hari: 'Senin',
+      jam: '05:30',
+      is_rutin: 1,
+    });
+    assert.equal(routinePersonalAlarm.repeat_until_ok, 0);
   });
 });

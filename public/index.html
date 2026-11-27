@@ -1115,17 +1115,17 @@
             <div>
               <div class="settings-box-title">
                 <i data-lucide="repeat" class="icon-15"></i>
-                <span>Pengingat Presensi Berulang</span>
+                <span>Mode Alarm Presensi (Berulang sampai OK)</span>
               </div>
-              <div class="text-xs muted">Kirim pengingat terus secara berkala sampai kamu balas "ok" di WA</div>
+              <div class="text-xs muted">Aktifkan khusus untuk presensi/kuliah agar terus diingatkan tiap interval sampai balas "ok". Matikan untuk Alarm Biasa (1x pengingat).</div>
             </div>
             <label class="switch">
               <input id="jadwal-repeat-ok" type="checkbox" checked />
               <span class="slider"></span>
             </label>
           </div>
-          <label class="field">
-            <span>Interval Ulang (Menit)</span>
+          <label class="field" id="field-jadwal-repeat-interval">
+            <span>Interval Ulang Presensi (Menit)</span>
             <input id="jadwal-repeat-interval" type="number" min="1" max="180" value="20" />
           </label>
         </div>

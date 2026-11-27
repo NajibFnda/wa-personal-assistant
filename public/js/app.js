@@ -911,9 +911,9 @@ function renderJadwal() {
       <td>
         <strong>${escapeHtml(j.nama)}</strong>
         ${
-          j.repeat_until_ok !== 0 && !/\(Snooze\)/i.test(j.nama || '')
-            ? `<div class="text-xs muted" style="margin-top:3px;">Ulang tiap ${Number(j.repeat_interval_min) || 20} menit sampai balas OK</div>`
-            : ''
+          Number(j.repeat_until_ok) === 1 && !/\(Snooze\)/i.test(j.nama || '')
+            ? `<div class="text-xs muted" style="margin-top:3px;">Presensi • Ulang tiap ${Number(j.repeat_interval_min) || 20}m sampai balas OK</div>`
+            : `<div class="text-xs muted" style="margin-top:3px;">Alarm Biasa • 1x pengingat</div>`
         }
       </td>
       <td><span class="pill ${j.is_rutin ? 'pill-blue' : 'pill-cyan'}">${j.is_rutin ? 'Rutin' : 'Sekali Jalan'}</span></td>
@@ -966,9 +966,9 @@ function renderJadwal() {
       $('#jadwal-hari').value = item.hari || 'Senin';
       $('#jadwal-tanggal').value = item.tanggal || getTodayWibStr();
       $('#jadwal-jam').value = item.jam;
-      if ($('#jadwal-repeat-ok')) $('#jadwal-repeat-ok').checked = item.repeat_until_ok !== 0;
+      if ($('#jadwal-repeat-ok')) $('#jadwal-repeat-ok').checked = Number(item.repeat_until_ok) === 1;
       if ($('#jadwal-repeat-interval')) $('#jadwal-repeat-interval').value = Number(item.repeat_interval_min) || 20;
-      toggleJadwalFields();
+      toggleJadwalFields(false);
       openModal('modal-jadwal');
     });
   });
@@ -990,10 +990,19 @@ function renderJadwal() {
   renderIcons();
 }
 
-function toggleJadwalFields() {
+function syncJadwalRepeatField() {
+  const isPresensi = Boolean($('#jadwal-repeat-ok')?.checked);
+  $('#field-jadwal-repeat-interval')?.classList.toggle('hidden', !isPresensi);
+}
+
+function toggleJadwalFields(autoAdjustRepeat = false) {
   const isRutin = $('#jadwal-rutin').value === '1';
   $('#field-jadwal-hari').classList.toggle('hidden', !isRutin);
   $('#field-jadwal-tanggal').classList.toggle('hidden', isRutin);
+  if (autoAdjustRepeat && !$('#jadwal-id').value && $('#jadwal-repeat-ok')) {
+    $('#jadwal-repeat-ok').checked = isRutin;
+  }
+  syncJadwalRepeatField();
 }
 
 /* ==================== TAB 3: TUGAS ==================== */
@@ -2960,7 +2969,8 @@ function bindFormsAndActions() {
     });
   });
 
-  $('#jadwal-rutin')?.addEventListener('change', toggleJadwalFields);
+  $('#jadwal-rutin')?.addEventListener('change', () => toggleJadwalFields(true));
+  $('#jadwal-repeat-ok')?.addEventListener('change', syncJadwalRepeatField);
   $('#btn-open-jadwal-modal')?.addEventListener('click', () => {
     $('#modal-jadwal-title').textContent = 'Tambah Jadwal';
     $('#form-jadwal').reset();
@@ -2968,7 +2978,7 @@ function bindFormsAndActions() {
     $('#jadwal-tanggal').value = getTodayWibStr();
     if ($('#jadwal-repeat-ok')) $('#jadwal-repeat-ok').checked = true;
     if ($('#jadwal-repeat-interval')) $('#jadwal-repeat-interval').value = 20;
-    toggleJadwalFields();
+    toggleJadwalFields(false);
     openModal('modal-jadwal');
   });
 

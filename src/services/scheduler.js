@@ -52,14 +52,15 @@ export async function checkSchedules(now = new Date()) {
     firedScheduleKeys.add(dedupKey);
 
     const tipeLabel = item.is_rutin ? `Rutin setiap ${item.hari}` : `Sekali jalan (${item.tanggal})`;
-    const shouldRepeat = item.repeat_until_ok !== 0 && !/\(Snooze\)/i.test(item.nama || '');
+    const shouldRepeat = Number(item.repeat_until_ok) === 1 && !/\(Snooze\)/i.test(item.nama || '');
     const interval = Math.max(1, Math.min(180, Number(item.repeat_interval_min) || 20));
 
+    const title = shouldRepeat ? `⏰ Presensi: ${item.nama}` : `⏰ Alarm: ${item.nama}`;
     const body = shouldRepeat
       ? `Waktunya presensi *${item.nama}*!\n🕐 ${item.jam} WIB (${tipeLabel})\n\n🔁 _Akan diingatkan berulang tiap *${interval} menit* sampai kamu balas *"ok"*._`
-      : `Waktunya *${item.nama}*!\n🕐 ${item.jam} WIB (${tipeLabel})\n\n_Balas "tunda 10 menit" untuk snooze._`;
+      : `Waktunya *${item.nama}*!\n🕐 ${item.jam} WIB (${tipeLabel})\n\n_Pengingat alarm biasa (1x). Balas "tunda 10 menit" untuk snooze._`;
 
-    await sendDualNotification(`⏰ ${item.nama}`, body, '/#jadwal', {
+    await sendDualNotification(title, body, '/#jadwal', {
       recordForSnooze: true,
       activityName: item.nama,
       tag: dedupKey,

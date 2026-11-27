@@ -15,6 +15,7 @@ import {
   catatanRepo,
   focusRepo,
   habitRepo,
+  inferIsPresensi,
   jadwalRepo,
   memoriRepo,
   pengeluaranRepo,
@@ -397,14 +398,17 @@ export async function executeIntent({
                 tanggal: payload.tanggal,
                 jam: payload.jam,
                 is_rutin: payload.is_rutin,
+                is_presensi: payload.is_presensi,
               },
             ];
 
       const created = [];
-      const fallbackJamMatch = String(rawText || '').match(/\b(?:jam|pukul|pkl)\s*(\d{1,2}[:.]\d{2})\b/i) ||
-        String(rawText || '').match(/\b(\d{1,2}[:.]\d{2})\b/);
-      const fallbackHariMatch = String(rawText || '').match(/\b(senin|selasa|rabu|kamis|jum'?at|sabtu|minggu|ahad)\b/i);
-      const fallbackIsRutin = /\b(tiap|setiap|rutin)\b/i.test(String(rawText || ''));
+      const rawStr = String(rawText || '');
+      const fallbackJamMatch = rawStr.match(/\b(?:jam|pukul|pkl)\s*(\d{1,2}[:.]\d{2})\b/i) ||
+        rawStr.match(/\b(\d{1,2}[:.]\d{2})\b/);
+      const fallbackHariMatch = rawStr.match(/\b(senin|selasa|rabu|kamis|jum'?at|sabtu|minggu|ahad)\b/i);
+      const fallbackIsRutin = /\b(tiap|setiap|rutin)\b/i.test(rawStr);
+      const explicitNoPresensi = /\b(alarm\s+biasa|bukan\s+presensi|tanpa\s+ulang|jangan\s+ulang|sekali\s+saja)\b/i.test(rawStr);
 
       for (const item of items) {
         const cleanJam = normalizeJam(item.jam) || (fallbackJamMatch ? normalizeJam(fallbackJamMatch[1]) : null);
@@ -414,13 +418,30 @@ export async function executeIntent({
           normalizeHari(item.hari) ||
           (fallbackHariMatch ? normalizeHari(fallbackHariMatch[1]) : null) ||
           (item.tanggal ? getHariFromDateStr(item.tanggal) : nowParts.hari);
+        const itemNama = item.judul || payload.matkul || 'Jadwal Baru';
+        const explicitPresensi = /\b(presensi|absen|absensi)\b/i.test(`${itemNama} ${rawStr}`);
+
+        let isPresensi;
+        if (explicitNoPresensi) {
+          isPresensi = false;
+        } else if (explicitPresensi) {
+          isPresensi = true;
+        } else if (typeof item.is_presensi === 'boolean') {
+          isPresensi = item.is_presensi;
+        } else if (typeof payload.is_presensi === 'boolean') {
+          isPresensi = payload.is_presensi;
+        } else {
+          isPresensi = inferIsPresensi({ nama: itemNama, is_rutin: isRutin, rawText: rawStr });
+        }
+
         const rec = jadwalRepo.create({
-          nama: item.judul || payload.matkul || 'Jadwal Baru',
+          nama: itemNama,
           hari: resolvedHari,
           tanggal: isRutin ? null : normalizeDateStr(item.tanggal) || nowParts.dateStr,
           jam: cleanJam,
           is_rutin: isRutin ? 1 : 0,
           aktif: 1,
+          repeat_until_ok: isPresensi ? 1 : 0,
         });
         created.push(rec);
       }
@@ -432,11 +453,14 @@ export async function executeIntent({
       }
 
       const summary = created
-        .map((j) =>
-          j.is_rutin
-            ? `• *${j.nama}* — Rutin tiap ${j.hari} pukul ${j.jam} WIB`
-            : `• *${j.nama}* — ${j.hari}, ${j.tanggal} pukul ${j.jam} WIB`
-        )
+        .map((j) => {
+          const modeNote = j.repeat_until_ok
+            ? ` _(Presensi • ulang tiap ${Number(j.repeat_interval_min) || 20}m sampai balas "ok")_`
+            : ' _(Alarm Biasa • 1x pengingat)_';
+          return j.is_rutin
+            ? `• *${j.nama}* — Rutin tiap ${j.hari} pukul ${j.jam} WIB${modeNote}`
+            : `• *${j.nama}* — ${j.hari}, ${j.tanggal} pukul ${j.jam} WIB${modeNote}`;
+        })
         .join('\n');
 
       emitDataChange('jadwal', 'whatsapp');

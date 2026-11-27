@@ -1,5 +1,5 @@
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
-import { aiLogRepo, normalizeCategory, normalizeIncomeCategory } from '../config/db.js';
+import { aiLogRepo, inferIsPresensi, normalizeCategory, normalizeIncomeCategory } from '../config/db.js';
 import {
   HARI_ID,
   getWibParts,
@@ -645,9 +645,9 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
     }
   }
 
-  // 6C. Natural Indonesian Add Schedule ("Ingetin presensi tiap Selasa jam 07.50 matkul Sistem Terdistribusi")
+  // 6C. Natural Indonesian Add Schedule / Alarm ("Ingetin presensi tiap Selasa jam 07.50 matkul Sistem Terdistribusi" or "Pasang alarm besok jam 14:00 Mulai Percobaan Unet")
   if (
-    /\b(ingetin|ingatkan|jadwal|presensi|absen)\b/i.test(clean) &&
+    /\b(ingetin|ingatkan|jadwal|presensi|absen|alarm)\b/i.test(clean) &&
     !/\b(tunda|snooze|menit\s+lagi)\b/i.test(clean)
   ) {
     const jamMatch = clean.match(/\b(?:jam|pukul|pkl)\s*(\d{1,2}[:.]\d{2})\b/i);
@@ -657,24 +657,32 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
       if (jam) {
         const isRutin = /\b(tiap|setiap|rutin)\b/i.test(clean) && Boolean(relDate.hari);
         let nama = clean
-          .replace(/^(?:tolong\s+)?(?:ingetin|ingatkan|tambah(?:kan)?\s+jadwal|catat\s+jadwal|jadwal)\s+/i, '')
+          .replace(
+            /^(?:tolong\s+)?(?:(?:pasang|buat(?:kan)?|bikin(?:in)?|set)\s+)?(?:ingetin|ingatkan|tambah(?:kan)?\s+(?:jadwal|alarm)|catat\s+jadwal|jadwal|alarm(?:\s+biasa)?)(?:\s+(?:aku|saya|dong))?\s+/i,
+            ''
+          )
           .replace(/\b(?:tiap|setiap|rutin)\b/gi, ' ')
           .replace(relDate.matchedText, ' ')
           .replace(jamMatch[0], ' ')
           .replace(/\b(?:matkul|mata\s+kuliah)\b/gi, ' ')
+          .replace(/^(?:untuk|buat|soal)\s+/i, '')
           .replace(/\s+/g, ' ')
           .trim();
         if (nama) {
           nama = nama.charAt(0).toUpperCase() + nama.slice(1);
+          const isPresensi = inferIsPresensi({ nama, is_rutin: isRutin, rawText: clean });
           return {
             intent: 'TAMBAH_JADWAL',
-            reply_message: 'Siap, jadwal langsung disimpan!',
+            reply_message: isPresensi
+              ? 'Siap, pengingat presensi langsung disimpan!'
+              : 'Siap, alarm biasa langsung dipasang!',
             payload: {
               judul: nama,
               hari: relDate.hari || null,
               tanggal: isRutin ? null : relDate.dateStr,
               jam,
               is_rutin: isRutin,
+              is_presensi: isPresensi,
               kata_kunci: nama,
               isi_catatan: nama,
             },
@@ -901,6 +909,10 @@ const RESPONSE_SCHEMA = {
         tanggal_akhir: { type: Type.STRING, description: 'Tanggal akhir rentang query format YYYY-MM-DD.' },
         jam: { type: Type.STRING, description: 'Jam format 24-jam HH:MM.' },
         is_rutin: { type: Type.BOOLEAN, description: 'true jika jadwal berulang mingguan, false jika sekali jalan.' },
+        is_presensi: {
+          type: Type.BOOLEAN,
+          description: 'true HANYA jika ini jadwal presensi/absen/kuliah/kelas/praktikum/KRS yang harus diingatkan berulang tiap 20 menit sampai dibalas "ok". false untuk alarm biasa / pengingat kegiatan biasa (eksperimen, percobaan, rapat, bimbingan, bangun pagi, minum obat, dll) yang cukup berbunyi 1x.',
+        },
         menit_tunda: { type: Type.INTEGER, description: 'Jumlah menit tunda untuk SNOOZE_JADWAL.' },
         isi_catatan: { type: Type.STRING, description: 'Ringkasan memori pacar, catatan wishlist/momen, atau konten URL/teks untuk vault.' },
         kata_kunci: { type: Type.STRING, description: 'Kata kunci pencarian memori, tugas, atau label item vault.' },
@@ -952,6 +964,7 @@ const RESPONSE_SCHEMA = {
               tanggal: { type: Type.STRING },
               jam: { type: Type.STRING },
               is_rutin: { type: Type.BOOLEAN },
+              is_presensi: { type: Type.BOOLEAN },
             },
             required: ['judul', 'jam'],
           },
@@ -1027,6 +1040,7 @@ FORMAT OUTPUT JSON WAJIB (hanya keluarkan 1 objek JSON valid tanpa teks tambahan
     "tanggal_akhir": "YYYY-MM-DD (untuk rentang query)",
     "jam": "HH:MM format 24 jam (jika relevan)",
     "is_rutin": true/false,
+    "is_presensi": true/false (true HANYA untuk jadwal presensi/absen/kuliah/kelas/praktikum/KRS; false untuk alarm biasa/pengingat kegiatan umum),
     "menit_tunda": integer,
     "isi_catatan": "string (ringkasan memori / detail wishlist / isi link/teks bersih untuk vault)",
     "kata_kunci": "string (judul singkat Title Case 2-4 kata untuk vault / keyword pencarian)",
@@ -1034,7 +1048,7 @@ FORMAT OUTPUT JSON WAJIB (hanya keluarkan 1 objek JSON valid tanpa teks tambahan
     "tipe_item": "WISHLIST|MOMEN|LINK|FILE",
     "ulang": "TAHUNAN|BULANAN|SEKALI",
     "expenses": [{ "item": "string", "nominal": integer_rupiah, "kategori": "Makan & Minum|Transportasi|Akademik|Hiburan|Uang Saku|Gaji & Freelance|Beasiswa|Hadiah & Bonus|Lainnya" }],
-    "schedules": [{ "judul": "string", "hari": "string", "tanggal": "YYYY-MM-DD", "jam": "HH:MM", "is_rutin": true/false }],
+    "schedules": [{ "judul": "string", "hari": "string", "tanggal": "YYYY-MM-DD", "jam": "HH:MM", "is_rutin": true/false, "is_presensi": true/false }],
     "tasks": [{ "judul": "string", "matkul": "string", "tanggal": "YYYY-MM-DD", "jam": "HH:MM" }]
   }
 }
@@ -1315,10 +1329,13 @@ KONTEKS WAKTU SAAT INI (WIB / Asia/Jakarta):
 - ${reminderCtx}
 
 ATURAN KLASIFIKASI INTENT:
-1. TAMBAH_JADWAL: Pengguna meminta diingatkan jadwal kuliah/presensi/kegiatan rutin mingguan ("tiap Selasa jam 07.50") atau sekali jalan ("besok jam 14.00", "nanti jam 19.30"), atau mengirim screenshot KRS/jadwal kuliah.
+1. TAMBAH_JADWAL: Pengguna meminta diingatkan jadwal kuliah/presensi/kegiatan rutin mingguan ("tiap Selasa jam 07.50") atau alarm/pengingat sekali jalan ("besok jam 14.00 mulai percobaan Unet", "nanti jam 19.30 rapat", "pasang alarm jam 05.30"), atau mengirim screenshot KRS/jadwal kuliah.
    - Jika rutin mingguan: is_rutin = true, isi hari (Senin-Minggu) & jam (HH:MM).
    - Jika sekali jalan: is_rutin = false, isi tanggal (YYYY-MM-DD) & jam (HH:MM).
-   - Jika gambar/teks memuat banyak jadwal sekaligus (misal KRS), isi array payload.schedules!
+   - WAJIB BEDAKAN ALARM PRESENSI vs ALARM BIASA lewat field payload.is_presensi:
+     * Set is_presensi = true HANYA untuk jadwal PRESENSI / ABSEN / KULIAH / MATA KULIAH / KELAS / PRAKTIKUM / screenshot KRS (ini akan berulang tiap 20 menit sampai pengguna balas "ok").
+     * Set is_presensi = false untuk ALARM BIASA / PENGINGAT KEGIATAN BIASA (contoh: "mulai percobaan Unet/DeepLab", "alarm bangun pagi", "rapat organisasi", "bimbingan skripsi", "minum obat", "olahraga", "bayar kos", "nonton"). Alarm biasa hanya berbunyi 1 kali tanpa pengulangan "ok"!
+   - Jika gambar/teks memuat banyak jadwal sekaligus (misal KRS), isi array payload.schedules (dan sertakan is_presensi di tiap item)!
 1B. CEK_JADWAL: Pengguna ingin melihat daftar jadwal kuliah/presensi/kegiatan ("cek jadwal", "jadwal hari ini apa?", "jadwal besok", "jadwal hari Selasa").
    - Jika spesifik hari/tanggal, isi payload.hari atau payload.tanggal; jika umum ("cek jadwal"), kosongkan keduanya.
 2. SNOOZE_JADWAL: Pengguna membalas pengingat untuk menunda/mengingatkan lagi ("ingetin lagi 10 menit lagi", "tunda 15 menit", "snooze 5 menit").

@@ -7,6 +7,7 @@ import {
   catatanRepo,
   focusRepo,
   habitRepo,
+  inferIsPresensi,
   jadwalRepo,
   memoriRepo,
   normalizeCategory,
@@ -546,19 +547,25 @@ export async function handleSlashCommand({
         return { text: `Hari/tanggal *"${dayOrDate}"* tidak dikenali. Gunakan Senin–Minggu atau \`YYYY-MM-DD\`.` };
       }
 
+      const isRutinFlag = asDate ? 0 : 1;
+      const isPresensi = inferIsPresensi({ nama, is_rutin: isRutinFlag });
       const rec = jadwalRepo.create({
         nama,
         hari: asHari || getHariFromDateStr(asDate),
         tanggal: asDate || null,
         jam,
-        is_rutin: asDate ? 0 : 1,
+        is_rutin: isRutinFlag,
         aktif: 1,
+        repeat_until_ok: isPresensi ? 1 : 0,
       });
       emitDataChange('jadwal', 'whatsapp');
+      const modeText = rec.repeat_until_ok
+        ? `Presensi • ulang tiap ${Number(rec.repeat_interval_min) || 20}m sampai balas "ok"`
+        : 'Alarm Biasa • 1x pengingat';
       return {
         text: rec.is_rutin
-          ? `📅 *Jadwal Rutin Tersimpan:*\n• *${rec.nama}*\n• Setiap ${rec.hari} pukul ${rec.jam} WIB`
-          : `📅 *Jadwal Sekali Jalan Tersimpan:*\n• *${rec.nama}*\n• ${rec.hari}, ${rec.tanggal} pukul ${rec.jam} WIB`,
+          ? `📅 *Jadwal Rutin Tersimpan:*\n• *${rec.nama}*\n• Setiap ${rec.hari} pukul ${rec.jam} WIB\n• Mode: _${modeText}_`
+          : `📅 *Jadwal Sekali Jalan Tersimpan:*\n• *${rec.nama}*\n• ${rec.hari}, ${rec.tanggal} pukul ${rec.jam} WIB\n• Mode: _${modeText}_`,
       };
     }
 

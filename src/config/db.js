@@ -451,6 +451,38 @@ export const settingsRepo = {
 };
 
 /* ==================== MODUL 1: JADWAL ==================== */
+export function inferIsPresensi({ nama = '', is_rutin = 0, rawText = '' } = {}) {
+  const cleanNama = String(nama || '').trim();
+  const combined = `${cleanNama} ${String(rawText || '')}`.trim();
+  if (/\(snooze\)/i.test(cleanNama)) return false;
+
+  // Explicit user opt-out for normal alarm
+  if (/\b(alarm\s+biasa|bukan\s+presensi|tanpa\s+ulang|jangan\s+ulang|sekali\s+saja)\b/i.test(combined)) {
+    return false;
+  }
+
+  // Explicit presensi / class attendance keywords -> always repeating presensi
+  if (/\b(presensi|absen|absensi|kehadiran|kuliah|matkul|mata\s+kuliah|praktikum|kelas|krs)\b/i.test(combined)) {
+    return true;
+  }
+
+  // One-shot alarms without presensi keywords are ordinary 1x alarms
+  const rutinFlag = is_rutin === false || Number(is_rutin) === 0 ? 0 : 1;
+  if (!rutinFlag) return false;
+
+  // Routine schedules that clearly describe personal alarms/activities are ordinary alarms
+  if (
+    /\b(alarm|bangun|tidur|minum|obat|makan|olahraga|gym|lari|jogging|sholat|solat|sahur|buka\s+puasa|rapat|meeting|standup|bimbingan|bayar|tagihan|jemput|percobaan|eksperimen|training|run|backup|siram|kerja|ngoding|belajar)\b/i.test(
+      combined
+    )
+  ) {
+    return false;
+  }
+
+  // Routine weekly schedules (e.g., imported KRS subjects like "Kriptografi", "Sistem Informasi") default to presensi
+  return true;
+}
+
 export const jadwalRepo = {
   list({ aktif, is_rutin } = {}) {
     const conditions = [];
@@ -513,7 +545,7 @@ export const jadwalRepo = {
     }
 
     const aktifFlag = aktif === false || Number(aktif) === 0 ? 0 : 1;
-    const defaultRepeat = /\(Snooze\)/i.test(cleanNama) ? 0 : 1;
+    const defaultRepeat = inferIsPresensi({ nama: cleanNama, is_rutin: rutinFlag }) ? 1 : 0;
     const repeatFlag =
       repeat_until_ok === undefined || repeat_until_ok === null
         ? defaultRepeat
