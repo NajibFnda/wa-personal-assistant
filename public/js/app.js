@@ -1115,14 +1115,17 @@ function renderOutboundPending() {
 function renderOutboundAlarms() {
   const tbody = $('#outbound-tbody');
   const empty = $('#outbound-empty');
+  const tableWrap = $('#outbound-table-wrap');
   if (!tbody || !empty) return;
 
   if (!state.outboundAlarms.length) {
     tbody.innerHTML = '';
+    tableWrap?.classList.add('hidden');
     empty.classList.remove('hidden');
     renderIcons();
     return;
   }
+  tableWrap?.classList.remove('hidden');
   empty.classList.add('hidden');
   tbody.innerHTML = state.outboundAlarms
     .map((a) => {

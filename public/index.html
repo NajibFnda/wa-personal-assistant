@@ -578,15 +578,15 @@
 
         <!-- Alarm ke Nomor Lain (Kirim Sampai Balas OK) -->
         <article class="glass-card" id="outbound-alarms-card">
-          <div class="card-header compact-head">
-            <div class="card-title-group">
+          <div class="card-header compact-head" style="flex-wrap:wrap;">
+            <div class="card-title-group" style="flex:1;min-width:240px;">
               <span class="title-icon"><i data-lucide="send" class="icon-18"></i></span>
               <div>
                 <h3>Alarm ke Nomor Lain</h3>
-                <p class="muted text-xs">Suruh bot mengirim pengingat berulang ke nomor WA lain sampai penerima membalas "ok" (zero-leak: penerima tidak bisa mengakses data pribadimu)</p>
+                <p class="muted text-xs">Kirim pengingat berulang ke nomor WA lain sampai penerima balas "ok" (zero-leak)</p>
               </div>
             </div>
-            <div class="header-actions">
+            <div class="header-actions" style="flex-shrink:0;">
               <button id="btn-open-contacts-modal" class="btn btn-secondary btn-sm" type="button">
                 <i data-lucide="users" class="icon-14"></i>
                 <span>Kelola Kontak</span>
@@ -600,7 +600,7 @@
 
           <div id="outbound-pending-banner" class="hidden" style="margin-bottom:14px;"></div>
 
-          <div class="table-responsive">
+          <div id="outbound-table-wrap" class="table-responsive hidden">
             <table class="data-table">
               <thead>
                 <tr>
@@ -616,8 +616,8 @@
             </table>
           </div>
           <div id="outbound-empty" class="empty-state hidden">
-            <span class="empty-icon-wrap"><i data-lucide="send" class="icon-24"></i></span>
-            <p>Belum ada alarm ke nomor lain. Klik Buat Alarm atau suruh lewat WA: "Setiap hari jam 06:00 kirim alarm ke pacar Bangun pagi tiap 10 menit sampai balas ok".</p>
+            <span class="empty-icon-wrap"><i data-lucide="calendar-clock" class="icon-24"></i></span>
+            <p>Belum ada jadwal alarm terjadwal (Harian / Mingguan / Tanggal tertentu). Mode "Kirim Langsung Sekarang" langsung muncul di antrean aktif di atas.</p>
           </div>
         </article>
 
