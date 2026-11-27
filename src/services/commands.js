@@ -5,6 +5,7 @@ import {
   VAULT_UPLOADS_DIR,
   auditRepo,
   catatanRepo,
+  contactRepo,
   focusRepo,
   habitRepo,
   inferIsPresensi,
@@ -13,7 +14,11 @@ import {
   memoriRepo,
   normalizeCategory,
   normalizeIncomeCategory,
+  normalizeOutboundMode,
   normalizeRecurrence,
+  normalizeWaPhone,
+  outboundAlarmRepo,
+  outboundPendingRepo,
   pengeluaranRepo,
   presensiPendingRepo,
   reminderRepo,
@@ -146,6 +151,12 @@ function buildHelpText() {
     '• `/s <menit>` — Snooze pengingat terakhir',
     '• `/ring [detik]` — Tes dering keras HP (`ntfy` Urgent + `[ALARM-RING]`)',
     '• `/ntfy` — Lihat topik rahasia & cara pasang aplikasi `ntfy`',
+    '',
+    '📤 *Alarm ke Nomor Lain (Sampai Balas OK)*',
+    '• `/kontak` atau `/kontak <nama> <nomor>` — Lihat/simpan kontak tujuan',
+    '• `/kirim` — Lihat daftar alarm ke nomor lain & antrean aktif',
+    '• `/kirim <kontak/no> <sekarang|harian|hari|YYYY-MM-DD> [HH:MM] | <pesan> [| interval_m]`',
+    '• `/stopkirim [kontak/no]` — Hentikan pengingat berulang ke nomor lain',
     '',
     '📝 *Tugas & Deadline*',
     '• `/t` — Lihat semua tugas aktif',
@@ -1044,6 +1055,177 @@ export async function handleSlashCommand({
           '4. Uji coba dengan kirim `/ring 5` di chat ini lalu kunci layar HP!',
         ].join('\n'),
       };
+    }
+
+    /* ==================== OUTBOUND ALARMS (/kontak, /kirim, /stopkirim) ==================== */
+    case 'kontak': {
+      if (!args) {
+        const list = contactRepo.list();
+        if (!list.length) {
+          return {
+            text: '📇 Belum ada kontak tujuan tersimpan.\nSimpan dengan `/kontak pacar 08123456789` atau lewat Web Dashboard.',
+          };
+        }
+        const lines = list.map((c, i) => `${i + 1}. *${c.nama}* — \`${c.nomor}\`${c.catatan ? ` _(${c.catatan})_` : ''}`);
+        return { text: `📇 *Daftar Kontak Tujuan (${list.length}):*\n\n${lines.join('\n')}` };
+      }
+
+      const kMatch = args.match(/^(.+?)\s+([+\d][\d\s\-()]{8,18})$/);
+      if (!kMatch) {
+        return { text: 'Format: `/kontak <nama> <nomor WA>`\nContoh: `/kontak pacar 08123456789`' };
+      }
+      const saved = contactRepo.upsert({ nama: kMatch[1].trim(), nomor: kMatch[2].trim() });
+      emitDataChange('outbound', 'whatsapp');
+      return {
+        text: `✅ *Kontak Tersimpan:*\n• Nama: *${saved.nama}*\n• Nomor WA: \`${saved.nomor}\``,
+      };
+    }
+
+    case 'kirim': {
+      if (!args) {
+        const alarms = outboundAlarmRepo.list({ aktif: 1 });
+        const pending = outboundPendingRepo.listActive();
+        const blocks = [];
+        if (pending.length) {
+          blocks.push(
+            `⏳ *Sedang Menunggu Balasan "ok" (${pending.length}):*\n` +
+              pending
+                .map(
+                  (p, i) =>
+                    `${i + 1}. *${p.target_nama}* (\`${p.target_nomor}\`) — ${p.pesan}\n    Ke-${p.repeat_count}/${p.max_repeats} • Ulang ${p.next_trigger_at.slice(11, 16)} WIB (tiap ${p.interval_menit}m)`
+                )
+                .join('\n')
+          );
+        }
+        if (alarms.length) {
+          blocks.push(
+            `📤 *Jadwal Alarm Nomor Lain Aktif (${alarms.length}):*\n` +
+              alarms
+                .map((a, i) => {
+                  const when = a.mode === 'HARIAN' ? `Setiap Hari ${a.jam}` : a.mode === 'MINGGUAN' ? `Tiap ${a.hari} ${a.jam}` : `${a.tanggal} ${a.jam}`;
+                  const rep = a.repeat_until_ok ? `ulang tiap ${a.interval_menit}m s/d OK` : '1x';
+                  return `${i + 1}. *${a.target_nama}* — ${when} WIB (${rep})\n    "${a.pesan}"`;
+                })
+                .join('\n')
+          );
+        }
+        if (!blocks.length) {
+          return {
+            text:
+              '📤 Belum ada alarm ke nomor lain yang aktif.\n' +
+              'Contoh:\n' +
+              '• `/kirim pacar harian 06:00 | Bangun pagi! | 10`\n' +
+              '• `/kirim 08123456789 sekarang | Angkat telpon | 5`',
+          };
+        }
+        return { text: blocks.join('\n\n') };
+      }
+
+      const parts = args.split('|').map((s) => s.trim());
+      if (parts.length < 2 || !parts[0] || !parts[1]) {
+        return {
+          text:
+            'Format: `/kirim <kontak/no> <sekarang|harian|hari|YYYY-MM-DD> [HH:MM] | <pesan> [| interval_menit] [| max_ulang]`\n' +
+            'Contoh:\n• `/kirim pacar harian 06:00 | Bangun pagi! | 10`\n• `/kirim pacar sekarang | Jangan lupa makan | 5`',
+        };
+      }
+
+      const headerTokens = parts[0].split(/\s+/).filter(Boolean);
+      const targetQuery = headerTokens[0];
+      const whenToken = (headerTokens[1] || 'sekarang').toLowerCase();
+      const jamToken = headerTokens[2] || '';
+      const pesan = parts[1];
+      const intervalMenit = parts[2] ? Math.max(2, Math.min(180, Number(parts[2]) || 10)) : 10;
+      const maxRepeats = parts[3] ? Math.max(1, Math.min(60, Number(parts[3]) || 20)) : 20;
+
+      const savedContact = contactRepo.findByNameOrNumber(targetQuery);
+      const cleanNomor = savedContact ? savedContact.nomor : normalizeWaPhone(targetQuery);
+      const targetNama = savedContact ? savedContact.nama : cleanNomor;
+      if (!cleanNomor) {
+        return {
+          text: `Kontak *"${targetQuery}"* belum ditemukan. Simpan dulu dengan \`/kontak ${targetQuery} 0812xxxxxxxx\`.`,
+        };
+      }
+
+      if (whenToken === 'sekarang' || whenToken === 'now') {
+        const { triggerOutboundAlarmNow } = await import('./scheduler.js');
+        await triggerOutboundAlarmNow(
+          {
+            target_nama: targetNama,
+            target_nomor: cleanNomor,
+            pesan,
+            repeat_until_ok: 1,
+            interval_menit: intervalMenit,
+            max_repeats: maxRepeats,
+          },
+          now
+        );
+        return {
+          text: `📤 *Alarm Terkirim Sekarang!*\n• Tujuan: *${targetNama}* (\`${cleanNomor}\`)\n• Pesan: *${pesan}*\n• Ulang tiap *${intervalMenit} menit* sampai dibalas *"ok"* (maks ${maxRepeats}x).`,
+        };
+      }
+
+      const cleanJam = normalizeJam(jamToken);
+      if (!cleanJam) {
+        return { text: 'Format jam belum valid. Contoh: `/kirim pacar harian 06:00 | Bangun pagi! | 10`' };
+      }
+
+      let mode = 'SEKALI';
+      let hari = null;
+      let tanggal = null;
+      if (whenToken === 'harian' || whenToken === 'daily') {
+        mode = 'HARIAN';
+      } else if (normalizeDateStr(whenToken)) {
+        mode = 'SEKALI';
+        tanggal = normalizeDateStr(whenToken);
+      } else if (normalizeHari(whenToken)) {
+        mode = 'MINGGUAN';
+        hari = normalizeHari(whenToken);
+      } else {
+        return { text: `Waktu *"${whenToken}"* tidak dikenali. Gunakan \`sekarang\`, \`harian\`, nama hari (\`senin\`), atau \`YYYY-MM-DD\`.` };
+      }
+
+      const created = outboundAlarmRepo.create({
+        target_nama: targetNama,
+        target_nomor: cleanNomor,
+        pesan,
+        mode: normalizeOutboundMode(mode),
+        hari,
+        tanggal,
+        jam: cleanJam,
+        repeat_until_ok: 1,
+        interval_menit: intervalMenit,
+        max_repeats: maxRepeats,
+      });
+      emitDataChange('outbound', 'whatsapp');
+      const jadwalDesc =
+        created.mode === 'HARIAN'
+          ? `Setiap Hari pukul ${created.jam} WIB`
+          : created.mode === 'MINGGUAN'
+            ? `Tiap ${created.hari} pukul ${created.jam} WIB`
+            : `${created.hari}, ${created.tanggal} pukul ${created.jam} WIB`;
+      return {
+        text: `📤 *Alarm Nomor Lain Tersimpan:*\n• Tujuan: *${created.target_nama}* (\`${created.target_nomor}\`)\n• Jadwal: *${jadwalDesc}*\n• Pesan: *${created.pesan}*\n• Ulang tiap *${created.interval_menit} menit* sampai dibalas *"ok"* (maks ${created.max_repeats}x).`,
+      };
+    }
+
+    case 'stopkirim': {
+      let stopped = [];
+      if (!args) {
+        stopped = outboundPendingRepo.acknowledgeAll(nowParts.dateTimeStr, 'OWNER');
+      } else {
+        const savedContact = contactRepo.findByNameOrNumber(args);
+        const cleanNomor = savedContact ? savedContact.nomor : normalizeWaPhone(args);
+        if (cleanNomor) {
+          stopped = outboundPendingRepo.acknowledgeByPhone(cleanNomor, nowParts.dateTimeStr, 'OWNER');
+        }
+      }
+      if (!stopped.length) {
+        return { text: '✅ Tidak ada alarm nomor lain yang sedang berjalan saat ini.' };
+      }
+      emitDataChange('outbound', 'whatsapp');
+      const names = stopped.map((s) => `*${s.target_nama}* (${s.pesan})`).join(', ');
+      return { text: `🛑 Pengingat berulang untuk ${names} telah dihentikan.` };
     }
 
     case 'briefing': {

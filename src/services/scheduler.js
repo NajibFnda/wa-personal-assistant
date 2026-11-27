@@ -9,6 +9,8 @@ import {
   habitRepo,
   jadwalRepo,
   memoriRepo,
+  outboundAlarmRepo,
+  outboundPendingRepo,
   presensiPendingRepo,
   reminderRepo,
   settingsRepo,
@@ -26,7 +28,7 @@ import {
 } from '../utils/time.js';
 import { emitDataChange } from './events.js';
 import { generateMonthlyPartnerRecap } from './gemini.js';
-import { sendDualNotification } from './notifier.js';
+import { sendDualNotification, sendWhatsAppToTarget } from './notifier.js';
 import { sendDocumentToOwner } from './whatsapp.js';
 
 const firedScheduleKeys = new Set();
@@ -439,38 +441,189 @@ export async function runWeeklyBackup(now = new Date()) {
   }
 }
 
+/**
+ * Modul 1C: Immediately fire an outbound alarm to another WhatsApp number and queue repeats if repeat_until_ok=1.
+ */
+export async function triggerOutboundAlarmNow(
+  {
+    alarm_id = null,
+    target_nama,
+    target_nomor,
+    pesan,
+    repeat_until_ok = 1,
+    interval_menit = 10,
+    max_repeats = 20,
+  },
+  now = new Date()
+) {
+  const parts = getWibParts(now);
+  const shouldRepeat = repeat_until_ok === true || Number(repeat_until_ok) === 1;
+  const interval = Math.max(2, Math.min(180, Math.round(Number(interval_menit) || 10)));
+  const maxRep = Math.max(1, Math.min(60, Math.round(Number(max_repeats) || 20)));
+
+  const body = shouldRepeat
+    ? `⏰ *Pengingat:*\n${pesan}\n\n🔁 _Akan diingatkan lagi tiap *${interval} menit* sampai kamu balas *"ok"*._`
+    : `⏰ *Pengingat:*\n${pesan}`;
+
+  await sendWhatsAppToTarget(target_nomor, body);
+
+  let pending = null;
+  if (shouldRepeat) {
+    const nextTarget = addMinutesWib(interval, now);
+    pending = outboundPendingRepo.create({
+      alarm_id,
+      target_nama: target_nama || target_nomor,
+      target_nomor,
+      pesan,
+      tanggal: parts.dateStr,
+      jam_awal: parts.timeStr,
+      interval_menit: interval,
+      max_repeats: maxRep,
+      next_trigger_at: nextTarget.dateTimeStr,
+    });
+  }
+
+  emitDataChange('outbound', 'scheduler');
+  return { sent: true, pending };
+}
+
+/**
+ * Modul 1D: Check due scheduled outbound alarms (SEKALI / HARIAN / MINGGUAN).
+ */
+export async function checkOutboundAlarms(now = new Date()) {
+  const parts = getWibParts(now);
+  const dueList = outboundAlarmRepo.getDueAlarms(parts.hari, parts.dateStr, parts.timeStr);
+
+  if (firedScheduleKeys.size > 500) {
+    firedScheduleKeys.clear();
+  }
+
+  let triggered = 0;
+  for (const item of dueList) {
+    const dedupKey = `outbound:${item.id}:${parts.dateStr}:${parts.timeStr}`;
+    if (firedScheduleKeys.has(dedupKey)) continue;
+    firedScheduleKeys.add(dedupKey);
+
+    try {
+      await triggerOutboundAlarmNow(
+        {
+          alarm_id: item.id,
+          target_nama: item.target_nama,
+          target_nomor: item.target_nomor,
+          pesan: item.pesan,
+          repeat_until_ok: item.repeat_until_ok,
+          interval_menit: item.interval_menit,
+          max_repeats: item.max_repeats,
+        },
+        now
+      );
+
+      if (item.mode === 'SEKALI') {
+        outboundAlarmRepo.deactivate(item.id);
+        emitDataChange('outbound', 'scheduler');
+      }
+      triggered += 1;
+    } catch (err) {
+      console.error(`[Scheduler] Failed sending outbound alarm #${item.id}:`, err?.message || err);
+    }
+  }
+
+  return triggered;
+}
+
+/**
+ * Modul 1E: Repeating outbound alarms until the target number replies "ok" (or hits max_repeats / day rollover).
+ */
+export async function checkOutboundPending(now = new Date()) {
+  const parts = getWibParts(now);
+  const dueList = outboundPendingRepo.getDue(parts.dateTimeStr);
+  let triggered = 0;
+
+  for (const row of dueList) {
+    if (row.tanggal && row.tanggal < parts.dateStr) {
+      outboundPendingRepo.acknowledgeById(row.id, parts.dateTimeStr, 'DAY_ROLLOVER');
+      emitDataChange('outbound', 'scheduler');
+      continue;
+    }
+
+    const interval = Math.max(2, Math.min(180, Number(row.interval_menit) || 10));
+    const maxRepeats = Math.max(1, Math.min(60, Number(row.max_repeats) || 20));
+    const nextCount = (Number(row.repeat_count) || 1) + 1;
+
+    if (nextCount > maxRepeats) {
+      outboundPendingRepo.acknowledgeById(row.id, parts.dateTimeStr, 'AUTO_LIMIT');
+      await sendDualNotification(
+        `⏰ Alarm Nomor Lain Berakhir: ${row.target_nama}`,
+        `Pengingat berulang ke *${row.target_nama}* (\`${row.target_nomor}\`) untuk *"${row.pesan}"* dihentikan otomatis setelah ${maxRepeats}x kirim tanpa balasan "ok".`,
+        '/#jadwal',
+        { recordForSnooze: false, tag: `outbound-end-${row.id}` }
+      ).catch(() => {});
+      emitDataChange('outbound', 'scheduler');
+      triggered += 1;
+      continue;
+    }
+
+    const nextTarget = addMinutesWib(interval, now);
+    outboundPendingRepo.bumpRepeat(row.id, nextTarget.dateTimeStr, nextCount);
+
+    const msg =
+      `🔔 *Pengingat #${nextCount}:*\n${row.pesan}\n\n` +
+      `🔁 _Pengingat ulang ke-${nextCount} (setiap ${interval} menit). Balas *"ok"* untuk menghentikan._`;
+
+    try {
+      await sendWhatsAppToTarget(row.target_nomor, msg);
+    } catch (err) {
+      console.error(`[Scheduler] Failed outbound repeat #${row.id}:`, err?.message || err);
+    }
+
+    emitDataChange('outbound', 'scheduler');
+    triggered += 1;
+  }
+
+  return triggered;
+}
+
 export async function runMinuteTick(now = new Date()) {
-  const [schedules, presensiRepeats, tasks, moments, reminders, focus, habits] = await Promise.all([
-    checkSchedules(now).catch((err) => {
-      console.error('[Scheduler] checkSchedules error:', err);
-      return 0;
-    }),
-    checkPendingPresensi(now).catch((err) => {
-      console.error('[Scheduler] checkPendingPresensi error:', err);
-      return 0;
-    }),
-    checkTaskDeadlines(now).catch((err) => {
-      console.error('[Scheduler] checkTaskDeadlines error:', err);
-      return 0;
-    }),
-    checkSpecialMoments(now).catch((err) => {
-      console.error('[Scheduler] checkSpecialMoments error:', err);
-      return 0;
-    }),
-    checkQuickReminders(now).catch((err) => {
-      console.error('[Scheduler] checkQuickReminders error:', err);
-      return 0;
-    }),
-    checkFocusSessions(now).catch((err) => {
-      console.error('[Scheduler] checkFocusSessions error:', err);
-      return 0;
-    }),
-    checkEveningHabitReminder(now).catch((err) => {
-      console.error('[Scheduler] checkEveningHabitReminder error:', err);
-      return 0;
-    }),
-  ]);
-  return { schedules, presensiRepeats, tasks, moments, reminders, focus, habits };
+  const [schedules, presensiRepeats, outboundAlarms, outboundRepeats, tasks, moments, reminders, focus, habits] =
+    await Promise.all([
+      checkSchedules(now).catch((err) => {
+        console.error('[Scheduler] checkSchedules error:', err);
+        return 0;
+      }),
+      checkPendingPresensi(now).catch((err) => {
+        console.error('[Scheduler] checkPendingPresensi error:', err);
+        return 0;
+      }),
+      checkOutboundAlarms(now).catch((err) => {
+        console.error('[Scheduler] checkOutboundAlarms error:', err);
+        return 0;
+      }),
+      checkOutboundPending(now).catch((err) => {
+        console.error('[Scheduler] checkOutboundPending error:', err);
+        return 0;
+      }),
+      checkTaskDeadlines(now).catch((err) => {
+        console.error('[Scheduler] checkTaskDeadlines error:', err);
+        return 0;
+      }),
+      checkSpecialMoments(now).catch((err) => {
+        console.error('[Scheduler] checkSpecialMoments error:', err);
+        return 0;
+      }),
+      checkQuickReminders(now).catch((err) => {
+        console.error('[Scheduler] checkQuickReminders error:', err);
+        return 0;
+      }),
+      checkFocusSessions(now).catch((err) => {
+        console.error('[Scheduler] checkFocusSessions error:', err);
+        return 0;
+      }),
+      checkEveningHabitReminder(now).catch((err) => {
+        console.error('[Scheduler] checkEveningHabitReminder error:', err);
+        return 0;
+      }),
+    ]);
+  return { schedules, presensiRepeats, outboundAlarms, outboundRepeats, tasks, moments, reminders, focus, habits };
 }
 
 function scheduleDynamicJobs() {

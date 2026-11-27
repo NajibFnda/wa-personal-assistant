@@ -15,6 +15,7 @@ import {
   auditRepo,
   budgetRepo,
   catatanRepo,
+  contactRepo,
   createConsistentBackup,
   focusRepo,
   getCalendarFeedToken,
@@ -23,6 +24,8 @@ import {
   habitRepo,
   jadwalRepo,
   memoriRepo,
+  outboundAlarmRepo,
+  outboundPendingRepo,
   pengeluaranRepo,
   presensiPendingRepo,
   pushRepo,
@@ -49,7 +52,12 @@ import {
   testAiEngines,
 } from '../services/gemini.js';
 import { isWebPushConfigured, sendDualNotification, sendRingTestNotification } from '../services/notifier.js';
-import { reloadScheduler, runMorningBriefing, runWeeklyBackup } from '../services/scheduler.js';
+import {
+  reloadScheduler,
+  runMorningBriefing,
+  runWeeklyBackup,
+  triggerOutboundAlarmNow,
+} from '../services/scheduler.js';
 import {
   getWhatsAppStatus,
   initWhatsApp,
@@ -231,6 +239,7 @@ router.get('/status', (_req, res) => {
     overview: {
       todaySchedules,
       pendingPresensi: presensiPendingRepo.listActive(),
+      outboundPending: outboundPendingRepo.listActive(),
       urgentTasks: activeTasks.slice(0, 5),
       upcomingMoments: upcomingMoments.slice(0, 5),
       todayExpenseTotal: todayExpense.totalExpense,
@@ -1104,6 +1113,119 @@ router.post('/pacar/rekomendasi', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+/* ==================== OUTBOUND ALARMS & CONTACTS (KIRIM KE NOMOR LAIN) ==================== */
+router.get('/contacts', (_req, res) => {
+  res.json(contactRepo.list());
+});
+
+router.post('/contacts', (req, res) => {
+  try {
+    const saved = contactRepo.upsert(req.body || {});
+    emitDataChange('outbound', 'api');
+    res.status(201).json(saved);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.delete('/contacts/:id', (req, res) => {
+  const deleted = contactRepo.remove(req.params.id);
+  if (!deleted) return res.status(404).json({ error: 'Kontak tidak ditemukan.' });
+  emitDataChange('outbound', 'api');
+  return res.json({ ok: true });
+});
+
+router.get('/outbound', (_req, res) => {
+  res.json({
+    alarms: outboundAlarmRepo.list(),
+    pending: outboundPendingRepo.listActive(),
+    contacts: contactRepo.list(),
+  });
+});
+
+router.post('/outbound', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const rawMode = String(body.mode || 'SEKALI').trim().toUpperCase();
+    if (rawMode === 'SEKARANG') {
+      const outcome = await triggerOutboundAlarmNow({
+        target_nama: body.target_nama,
+        target_nomor: body.target_nomor,
+        pesan: body.pesan,
+        repeat_until_ok: body.repeat_until_ok !== undefined ? body.repeat_until_ok : 1,
+        interval_menit: body.interval_menit || 10,
+        max_repeats: body.max_repeats || 20,
+      });
+      return res.status(201).json({ ok: true, sentNow: true, pending: outcome.pending });
+    }
+    const created = outboundAlarmRepo.create(body);
+    emitDataChange('outbound', 'api');
+    return res.status(201).json(created);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+function handleOutboundUpdate(req, res) {
+  try {
+    const updated = outboundAlarmRepo.update(req.params.id, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'Alarm nomor lain tidak ditemukan.' });
+    emitDataChange('outbound', 'api');
+    return res.json(updated);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+}
+
+router.put('/outbound/:id', handleOutboundUpdate);
+router.patch('/outbound/:id', handleOutboundUpdate);
+
+router.post('/outbound/:id/trigger', async (req, res) => {
+  try {
+    const item = outboundAlarmRepo.getById(req.params.id);
+    if (!item) return res.status(404).json({ error: 'Alarm nomor lain tidak ditemukan.' });
+    const outcome = await triggerOutboundAlarmNow({
+      alarm_id: item.id,
+      target_nama: item.target_nama,
+      target_nomor: item.target_nomor,
+      pesan: item.pesan,
+      repeat_until_ok: item.repeat_until_ok,
+      interval_menit: item.interval_menit,
+      max_repeats: item.max_repeats,
+    });
+    return res.json({ ok: true, pending: outcome.pending });
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+router.delete('/outbound/:id', (req, res) => {
+  const deleted = outboundAlarmRepo.remove(req.params.id);
+  if (!deleted) return res.status(404).json({ error: 'Alarm nomor lain tidak ditemukan.' });
+  emitDataChange('outbound', 'api');
+  return res.json({ ok: true });
+});
+
+router.post('/outbound/stop', (req, res) => {
+  const nowStr = getWibParts().dateTimeStr;
+  const targetId = req.body?.id;
+  const targetNomor = req.body?.target_nomor;
+  if (targetId) {
+    const acked = outboundPendingRepo.acknowledgeById(targetId, nowStr, 'OWNER');
+    if (!acked) return res.status(404).json({ error: 'Antrean alarm aktif tidak ditemukan.' });
+    emitDataChange('outbound', 'api');
+    return res.json({ ok: true, stopped: [acked] });
+  }
+  if (targetNomor) {
+    const stopped = outboundPendingRepo.acknowledgeByPhone(targetNomor, nowStr, 'OWNER');
+    emitDataChange('outbound', 'api');
+    return res.json({ ok: true, stopped });
+  }
+  const stoppedAll = outboundPendingRepo.acknowledgeAll(nowStr, 'OWNER');
+  emitDataChange('outbound', 'api');
+  return res.json({ ok: true, stopped: stoppedAll });
 });
 
 /* ==================== FITUR 4: CALENDAR SYNC METADATA ==================== */

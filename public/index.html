@@ -576,6 +576,51 @@
           </div>
         </div>
 
+        <!-- Alarm ke Nomor Lain (Kirim Sampai Balas OK) -->
+        <article class="glass-card" id="outbound-alarms-card">
+          <div class="card-header compact-head">
+            <div class="card-title-group">
+              <span class="title-icon"><i data-lucide="send" class="icon-18"></i></span>
+              <div>
+                <h3>Alarm ke Nomor Lain</h3>
+                <p class="muted text-xs">Suruh bot mengirim pengingat berulang ke nomor WA lain sampai penerima membalas "ok" (zero-leak: penerima tidak bisa mengakses data pribadimu)</p>
+              </div>
+            </div>
+            <div class="header-actions">
+              <button id="btn-open-contacts-modal" class="btn btn-secondary btn-sm" type="button">
+                <i data-lucide="users" class="icon-14"></i>
+                <span>Kelola Kontak</span>
+              </button>
+              <button id="btn-open-outbound-modal" class="btn btn-primary btn-sm" type="button">
+                <i data-lucide="plus" class="icon-14"></i>
+                <span>Buat Alarm</span>
+              </button>
+            </div>
+          </div>
+
+          <div id="outbound-pending-banner" class="hidden" style="margin-bottom:14px;"></div>
+
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Penerima</th>
+                  <th>Pesan</th>
+                  <th>Jadwal</th>
+                  <th>Pengulangan</th>
+                  <th>Status</th>
+                  <th class="text-right">Aksi</th>
+                </tr>
+              </thead>
+              <tbody id="outbound-tbody"></tbody>
+            </table>
+          </div>
+          <div id="outbound-empty" class="empty-state hidden">
+            <span class="empty-icon-wrap"><i data-lucide="send" class="icon-24"></i></span>
+            <p>Belum ada alarm ke nomor lain. Klik Buat Alarm atau suruh lewat WA: "Setiap hari jam 06:00 kirim alarm ke pacar Bangun pagi tiap 10 menit sampai balas ok".</p>
+          </div>
+        </article>
+
         <!-- Calendar Sync (.ics) Card (Fitur 4) -->
         <article class="glass-card calendar-sync-card">
           <div class="card-header compact-head">
@@ -1149,6 +1194,138 @@
           <button type="submit" class="btn btn-primary">Simpan Jadwal</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Modal Buat / Edit Alarm Nomor Lain -->
+  <div id="modal-outbound" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" data-close-modal="modal-outbound"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="modal-outbound-title">Buat Alarm ke Nomor Lain</h3>
+        <button class="icon-btn" type="button" data-close-modal="modal-outbound" aria-label="Tutup">
+          <i data-lucide="x" class="icon-16"></i>
+        </button>
+      </div>
+      <form id="form-outbound" class="stack-md">
+        <input type="hidden" id="outbound-id" />
+        <label class="field">
+          <span>Pilih Kontak Tersimpan (Opsional)</span>
+          <select id="outbound-contact-select">
+            <option value="">-- Ketik nomor manual di bawah --</option>
+          </select>
+        </label>
+        <div class="form-row">
+          <label class="field">
+            <span>Nama Penerima</span>
+            <input id="outbound-target-nama" type="text" placeholder="Contoh: Pacar / HP Kedua" />
+          </label>
+          <label class="field">
+            <span>Nomor WhatsApp</span>
+            <input id="outbound-target-nomor" type="tel" placeholder="0812xxxxxxxx" required />
+          </label>
+        </div>
+        <label class="field">
+          <span>Pesan Pengingat</span>
+          <textarea id="outbound-pesan" rows="2" placeholder="Contoh: Bangun pagi! Jangan lupa kuliah jam 07.00" required></textarea>
+        </label>
+        <label class="field">
+          <span>Mode Jadwal</span>
+          <select id="outbound-mode">
+            <option value="HARIAN">Setiap Hari (Mulai Jam Tertentu)</option>
+            <option value="SEKALI">Sekali Jalan (Tanggal &amp; Jam)</option>
+            <option value="MINGGUAN">Rutin Mingguan (Hari &amp; Jam)</option>
+            <option value="SEKARANG">Kirim Langsung Sekarang</option>
+          </select>
+        </label>
+        <div class="form-row" id="outbound-schedule-row">
+          <label class="field hidden" id="field-outbound-hari">
+            <span>Hari</span>
+            <select id="outbound-hari">
+              <option>Senin</option>
+              <option>Selasa</option>
+              <option>Rabu</option>
+              <option>Kamis</option>
+              <option>Jumat</option>
+              <option>Sabtu</option>
+              <option>Minggu</option>
+            </select>
+          </label>
+          <label class="field hidden" id="field-outbound-tanggal">
+            <span>Tanggal</span>
+            <input id="outbound-tanggal" type="date" />
+          </label>
+          <label class="field" id="field-outbound-jam">
+            <span>Jam Mulai (WIB)</span>
+            <input id="outbound-jam" type="time" value="06:00" />
+          </label>
+        </div>
+        <div class="settings-box">
+          <div class="settings-row-head">
+            <div>
+              <div class="settings-box-title">
+                <i data-lucide="repeat" class="icon-15"></i>
+                <span>Ulang Sampai Penerima Balas "ok"</span>
+              </div>
+              <div class="text-xs muted">Bot terus mengirim pengingat berkala hingga nomor tujuan membalas "ok" (atau kamu tekan Stop)</div>
+            </div>
+            <label class="switch">
+              <input id="outbound-repeat-ok" type="checkbox" checked />
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div class="form-row" id="field-outbound-repeat-opts">
+            <label class="field">
+              <span>Interval Ulang (Menit, min 2)</span>
+              <input id="outbound-interval" type="number" min="2" max="180" value="10" />
+            </label>
+            <label class="field">
+              <span>Batas Maksimal Ulang (Kali)</span>
+              <input id="outbound-max-repeats" type="number" min="1" max="60" value="20" />
+            </label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close-modal="modal-outbound">Batal</button>
+          <button type="submit" class="btn btn-primary" id="btn-submit-outbound">Simpan Alarm</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal Kelola Kontak Tujuan -->
+  <div id="modal-contacts" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" data-close-modal="modal-contacts"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Kontak Tujuan Alarm WA</h3>
+        <button class="icon-btn" type="button" data-close-modal="modal-contacts" aria-label="Tutup">
+          <i data-lucide="x" class="icon-16"></i>
+        </button>
+      </div>
+      <form id="form-contact" class="stack-md" style="margin-bottom:16px;">
+        <div class="form-row">
+          <label class="field">
+            <span>Nama Alias</span>
+            <input id="contact-nama" type="text" placeholder="Contoh: Pacar" required />
+          </label>
+          <label class="field">
+            <span>Nomor WhatsApp</span>
+            <input id="contact-nomor" type="tel" placeholder="0812xxxxxxxx" required />
+          </label>
+        </div>
+        <label class="field">
+          <span>Catatan (Opsional)</span>
+          <input id="contact-catatan" type="text" placeholder="Contoh: Alarm bangun pagi" />
+        </label>
+        <div class="modal-footer" style="margin-top:0;">
+          <button type="submit" class="btn btn-primary btn-sm">
+            <i data-lucide="plus" class="icon-14"></i>
+            <span>Simpan Kontak</span>
+          </button>
+        </div>
+      </form>
+      <div id="contacts-list" class="list-stack"></div>
     </div>
   </div>
 

@@ -4,6 +4,7 @@ import { getWibParts } from '../utils/time.js';
 
 let vapidConfigured = false;
 let waSenderFn = null;
+let targetWaSenderFn = null;
 let ntfyPublisherFn = null;
 let lastReminderCache = null;
 
@@ -37,6 +38,17 @@ export function isWebPushConfigured() {
 
 export function registerWhatsAppSender(fn) {
   waSenderFn = fn;
+}
+
+export function registerTargetWhatsAppSender(fn) {
+  targetWaSenderFn = fn;
+}
+
+export async function sendWhatsAppToTarget(phoneNumber, text) {
+  if (typeof targetWaSenderFn !== 'function') {
+    throw new Error('WhatsApp belum siap mengirim pesan ke nomor tujuan.');
+  }
+  return targetWaSenderFn(phoneNumber, text);
 }
 
 export function registerNtfyPublisher(fn) {

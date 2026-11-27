@@ -39,6 +39,7 @@ describe('All-in-One Personal Assistant End-to-End Verification (Isolated Test D
   let server;
   let baseUrl;
   const sentWaMessages = [];
+  const sentTargetMessages = [];
   const sentNtfyPayloads = [];
 
   before(async () => {
@@ -69,6 +70,9 @@ describe('All-in-One Personal Assistant End-to-End Verification (Isolated Test D
     initWebPush();
     registerWhatsAppSender(async (text) => {
       sentWaMessages.push(text);
+    });
+    notifMod.registerTargetWhatsAppSender(async (phone, text) => {
+      sentTargetMessages.push({ phone, text });
     });
     notifMod.registerNtfyPublisher(async (payload) => {
       sentNtfyPayloads.push(payload);
@@ -1138,5 +1142,101 @@ describe('All-in-One Personal Assistant End-to-End Verification (Isolated Test D
     // Confirm jadwalRepo stores ring_loud=1 when created directly
     const jDirect = jadwalRepo.create({ nama: 'Telpon Bangun', tanggal: '2026-11-29', jam: '05:00', is_rutin: 0, ring_loud: 1 });
     assert.equal(jDirect.ring_loud, 1);
+  });
+
+  it('12. Outbound Alarm to Another Number (Daily 06:00 -> repeats until target replies "ok", Zero-Leak Security)', async () => {
+    const { contactRepo, outboundAlarmRepo, outboundPendingRepo } = await import('../src/config/db.js');
+    const { tryLocalFastIntent } = await import('../src/services/gemini.js');
+    const { handleSlashCommand } = await import('../src/services/commands.js');
+    const { checkOutboundAlarms, checkOutboundPending } = await import('../src/services/scheduler.js');
+    const { handleTargetOkReply } = await import('../src/services/whatsapp.js');
+
+    const now = new Date('2026-11-28T20:00:00+07:00');
+
+    // 1. Save contact alias via natural fast-path ("simpan kontak pacar 081299988877")
+    const contactIntent = tryLocalFastIntent({ text: 'simpan kontak pacar 081299988877', hasMedia: false, now });
+    assert.equal(contactIntent?.intent, 'SIMPAN_KONTAK');
+    const contactExec = await executeIntent({ result: contactIntent, rawText: 'simpan kontak pacar 081299988877', now });
+    assert.match(contactExec.text, /6281299988877/);
+    assert.equal(contactRepo.findByNameOrNumber('pacar')?.nomor, '6281299988877');
+
+    // 2. Schedule daily 06:00 repeating outbound alarm via natural fast-path
+    const outText = 'Setiap hari mulai jam 6 pagi kirim alarm ke pacar "Bangun kuliah!" tiap 10 menit sampai balas ok';
+    const outIntent = tryLocalFastIntent({ text: outText, hasMedia: false, now });
+    assert.equal(outIntent?.intent, 'KIRIM_ALARM_ORANG');
+    assert.equal(outIntent?.payload?.mode_jadwal, 'HARIAN');
+    assert.equal(outIntent?.payload?.jam, '06:00');
+    assert.equal(outIntent?.payload?.interval_menit, 10);
+    assert.equal(outIntent?.payload?.ulang_sampai_ok, true);
+
+    const outExec = await executeIntent({ result: outIntent, rawText: outText, now });
+    assert.match(outExec.text, /Alarm Nomor Lain Tersimpan/);
+    assert.match(outExec.text, /Setiap Hari mulai pukul \*06:00 WIB\*/);
+
+    // 3. Fire at 06:00 WIB next morning -> sends #1 to target & queues repeat for 06:10
+    const beforeTarget = sentTargetMessages.length;
+    const fired0600 = await checkOutboundAlarms(new Date('2026-11-29T06:00:00+07:00'));
+    assert.equal(fired0600, 1);
+    assert.equal(sentTargetMessages.length, beforeTarget + 1);
+    assert.equal(sentTargetMessages[sentTargetMessages.length - 1].phone, '6281299988877');
+    assert.match(sentTargetMessages[sentTargetMessages.length - 1].text, /Bangun kuliah!/);
+    assert.equal(outboundPendingRepo.listActiveByPhone('6281299988877').length, 1);
+
+    // 4. Fire repeat #2 at 06:10 WIB -> target gets Pengingat #2
+    const fired0610 = await checkOutboundPending(new Date('2026-11-29T06:10:00+07:00'));
+    assert.equal(fired0610, 1);
+    assert.match(sentTargetMessages[sentTargetMessages.length - 1].text, /Pengingat #2/);
+
+    // 5. ZERO-LEAK CHECK: Random stranger replying "ok" -> SILENT DROP (null) & does NOT stop target's alarm
+    const strangerAck = handleTargetOkReply(
+      { remoteJid: '6289999999999@s.whatsapp.net', fromMe: false },
+      'ok',
+      new Date('2026-11-29T06:11:00+07:00')
+    );
+    assert.equal(strangerAck, null);
+    assert.equal(outboundPendingRepo.listActiveByPhone('6281299988877').length, 1);
+
+    // 6. ZERO-LEAK CHECK: Target sending unrelated text ("siapa nih") -> SILENT DROP & alarm stays active
+    const targetOther = handleTargetOkReply(
+      { remoteJid: '6281299988877@s.whatsapp.net', fromMe: false },
+      'siapa nih',
+      new Date('2026-11-29T06:12:00+07:00')
+    );
+    assert.equal(targetOther, null);
+    assert.equal(outboundPendingRepo.listActiveByPhone('6281299988877').length, 1);
+
+    // 7. Target replies "ok" -> stops immediately + polite target reply + owner report!
+    const targetAck = handleTargetOkReply(
+      { remoteJid: '6281299988877@s.whatsapp.net', fromMe: false },
+      'ok',
+      new Date('2026-11-29T06:13:00+07:00')
+    );
+    assert.ok(targetAck);
+    assert.match(targetAck.targetReply, /dihentikan/i);
+    assert.match(targetAck.ownerReport, /6281299988877/);
+    assert.equal(outboundPendingRepo.listActiveByPhone('6281299988877').length, 0);
+
+    // 8. At 06:20 -> completely silent (0 fired)
+    assert.equal(await checkOutboundPending(new Date('2026-11-29T06:20:00+07:00')), 0);
+
+    // 9. Slash commands (/kontak, /kirim sekarang, /stopkirim) + REST API (/api/outbound, /api/contacts)
+    const kNow = await handleSlashCommand({ text: '/kirim pacar sekarang | Jangan lupa minum obat | 5', now });
+    assert.match(kNow.text, /Alarm Terkirim Sekarang/);
+    assert.equal(outboundPendingRepo.listActiveByPhone('6281299988877').length, 1);
+
+    const stopRes = await handleSlashCommand({ text: '/stopkirim pacar', now });
+    assert.match(stopRes.text, /dihentikan/i);
+    assert.equal(outboundPendingRepo.listActiveByPhone('6281299988877').length, 0);
+
+    const outApi = await (await fetch(`${baseUrl}/api/outbound`)).json();
+    assert.ok(outApi.alarms.length >= 1 && outApi.contacts.length >= 1);
+    assert.ok(outboundAlarmRepo.list().length >= 1);
+
+    // Re-verify Zero-Emoji Policy on all frontend files after adding Outbound UI
+    const emojiRe = /\p{Extended_Pictographic}/u;
+    for (const rel of ['public/index.html', 'public/css/style.css', 'public/js/app.js']) {
+      const content = fs.readFileSync(path.join(process.cwd(), rel), 'utf8');
+      assert.equal(emojiRe.test(content), false, `Found prohibited emoji in ${rel}`);
+    }
   });
 });

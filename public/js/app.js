@@ -17,6 +17,9 @@ const state = {
   focusTickTimer: null,
   spotlightTimer: null,
   jadwalList: [],
+  outboundAlarms: [],
+  outboundPending: [],
+  outboundContacts: [],
   tugasList: [],
   catatanList: [],
   catatanCategories: [],
@@ -303,6 +306,7 @@ function switchTab(tabName) {
   }
   if (target === 'jadwal') {
     loadJadwal();
+    loadOutbound();
     loadCalendarInfo();
   }
   if (target === 'tugas') loadTugas();
@@ -1004,6 +1008,278 @@ function toggleJadwalFields(autoAdjustRepeat = false) {
     $('#jadwal-repeat-ok').checked = isRutin;
   }
   syncJadwalRepeatField();
+}
+
+/* ==================== TAB 2B: ALARM KE NOMOR LAIN ==================== */
+async function loadOutbound() {
+  try {
+    const data = await api('/api/outbound');
+    state.outboundAlarms = data.alarms || [];
+    state.outboundPending = data.pending || [];
+    state.outboundContacts = data.contacts || [];
+    renderOutboundPending();
+    renderOutboundAlarms();
+    renderContactsList();
+    populateOutboundContactSelect();
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+function populateOutboundContactSelect() {
+  const sel = $('#outbound-contact-select');
+  if (!sel) return;
+  const current = sel.value;
+  sel.innerHTML =
+    '<option value="">-- Ketik nomor manual di bawah --</option>' +
+    state.outboundContacts
+      .map((c) => `<option value="${escapeHtml(c.nomor)}" data-name="${escapeHtml(c.nama)}">${escapeHtml(c.nama)} (${escapeHtml(c.nomor)})</option>`)
+      .join('');
+  if (current) sel.value = current;
+}
+
+function renderOutboundPending() {
+  const box = $('#outbound-pending-banner');
+  if (!box) return;
+  const list = state.outboundPending || [];
+  if (!list.length) {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    return;
+  }
+  box.classList.remove('hidden');
+  box.innerHTML = `
+    <div class="settings-box">
+      <div class="settings-row-head">
+        <div>
+          <div class="settings-box-title">
+            <i data-lucide="bell-ring" class="icon-15"></i>
+            <span>Sedang Menunggu Balasan "ok" dari Penerima (${list.length})</span>
+          </div>
+          <div class="text-xs muted">Otomatis berhenti begitu nomor tujuan membalas "ok" atau klik Stop di sini</div>
+        </div>
+        <button id="btn-stop-all-outbound" class="btn btn-danger-ghost btn-sm" type="button">
+          <i data-lucide="square" class="icon-14"></i>
+          <span>Stop Semua</span>
+        </button>
+      </div>
+      <div class="list-stack">
+        ${list
+          .map(
+            (p) => `
+          <div class="mini-item">
+            <div>
+              <div class="fw-600 text-sm">${escapeHtml(p.target_nama)} <span class="mono text-xs muted">(${escapeHtml(p.target_nomor)})</span></div>
+              <div class="text-xs">${escapeHtml(p.pesan)}</div>
+              <div class="text-xs muted mono">Ke-${Number(p.repeat_count) || 1}/${Number(p.max_repeats) || 20} • Berikutnya ${escapeHtml(String(p.next_trigger_at || '').slice(11, 16))} WIB (tiap ${Number(p.interval_menit) || 10}m)</div>
+            </div>
+            <button class="btn btn-secondary btn-sm" type="button" data-stop-outbound="${p.id}">
+              <i data-lucide="square" class="icon-13"></i>
+              <span>Stop</span>
+            </button>
+          </div>`
+          )
+          .join('')}
+      </div>
+    </div>
+  `;
+
+  $('#btn-stop-all-outbound')?.addEventListener('click', async () => {
+    try {
+      await api('/api/outbound/stop', { method: 'POST', body: JSON.stringify({}) });
+      toast('Semua pengingat aktif ke nomor lain dihentikan.', 'success');
+      loadOutbound();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+
+  box.querySelectorAll('[data-stop-outbound]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try {
+        await api('/api/outbound/stop', {
+          method: 'POST',
+          body: JSON.stringify({ id: Number(btn.dataset.stopOutbound) }),
+        });
+        toast('Pengingat berulang dihentikan.', 'success');
+        loadOutbound();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    });
+  });
+
+  renderIcons();
+}
+
+function renderOutboundAlarms() {
+  const tbody = $('#outbound-tbody');
+  const empty = $('#outbound-empty');
+  if (!tbody || !empty) return;
+
+  if (!state.outboundAlarms.length) {
+    tbody.innerHTML = '';
+    empty.classList.remove('hidden');
+    renderIcons();
+    return;
+  }
+  empty.classList.add('hidden');
+  tbody.innerHTML = state.outboundAlarms
+    .map((a) => {
+      const jadwalText =
+        a.mode === 'HARIAN'
+          ? `Setiap Hari, ${escapeHtml(a.jam)} WIB`
+          : a.mode === 'MINGGUAN'
+            ? `Tiap ${escapeHtml(a.hari || '-')}, ${escapeHtml(a.jam)} WIB`
+            : `${escapeHtml(a.hari || '')} ${escapeHtml(a.tanggal || '-')}, ${escapeHtml(a.jam)} WIB`;
+      const repText =
+        Number(a.repeat_until_ok) === 1
+          ? `Tiap ${Number(a.interval_menit) || 10}m s/d OK (maks ${Number(a.max_repeats) || 20}x)`
+          : '1x kirim saja';
+      return `
+      <tr>
+        <td>
+          <strong>${escapeHtml(a.target_nama)}</strong>
+          <div class="text-xs muted mono">${escapeHtml(a.target_nomor)}</div>
+        </td>
+        <td style="max-width:240px;">${escapeHtml(a.pesan)}</td>
+        <td class="text-sm">${jadwalText}</td>
+        <td class="text-xs muted">${repText}</td>
+        <td>
+          <label class="switch" title="Aktif / Nonaktif">
+            <input type="checkbox" ${a.aktif ? 'checked' : ''} data-toggle-outbound="${a.id}" />
+            <span class="slider"></span>
+          </label>
+        </td>
+        <td class="text-right">
+          <button class="btn btn-ghost btn-sm" type="button" data-fire-outbound="${a.id}" title="Kirim Sekarang">
+            <i data-lucide="send" class="icon-14"></i>
+          </button>
+          <button class="btn btn-ghost btn-sm" type="button" data-edit-outbound="${a.id}" title="Edit">
+            <i data-lucide="pencil" class="icon-14"></i>
+          </button>
+          <button class="btn btn-danger-ghost btn-sm" type="button" data-del-outbound="${a.id}" title="Hapus">
+            <i data-lucide="trash-2" class="icon-14"></i>
+          </button>
+        </td>
+      </tr>`;
+    })
+    .join('');
+
+  tbody.querySelectorAll('[data-toggle-outbound]').forEach((cb) => {
+    cb.addEventListener('change', async () => {
+      try {
+        await api(`/api/outbound/${cb.dataset.toggleOutbound}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ aktif: cb.checked ? 1 : 0 }),
+        });
+        toast(cb.checked ? 'Alarm nomor lain diaktifkan.' : 'Alarm nomor lain dinonaktifkan.', 'success');
+      } catch (err) {
+        cb.checked = !cb.checked;
+        toast(err.message, 'error');
+      }
+    });
+  });
+
+  tbody.querySelectorAll('[data-fire-outbound]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Kirim alarm ini ke nomor tujuan sekarang juga?')) return;
+      try {
+        await api(`/api/outbound/${btn.dataset.fireOutbound}/trigger`, { method: 'POST' });
+        toast('Alarm langsung dikirim ke nomor tujuan.', 'success');
+        loadOutbound();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    });
+  });
+
+  tbody.querySelectorAll('[data-edit-outbound]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const item = state.outboundAlarms.find((x) => x.id === Number(btn.dataset.editOutbound));
+      if (!item) return;
+      $('#modal-outbound-title').textContent = 'Edit Alarm Nomor Lain';
+      $('#outbound-id').value = item.id;
+      $('#outbound-contact-select').value = '';
+      $('#outbound-target-nama').value = item.target_nama || '';
+      $('#outbound-target-nomor').value = item.target_nomor || '';
+      $('#outbound-pesan').value = item.pesan || '';
+      $('#outbound-mode').value = item.mode || 'HARIAN';
+      $('#outbound-hari').value = (item.hari || 'Senin').split(',')[0].trim();
+      $('#outbound-tanggal').value = item.tanggal || getTodayWibStr();
+      $('#outbound-jam').value = item.jam || '06:00';
+      $('#outbound-repeat-ok').checked = Number(item.repeat_until_ok) === 1;
+      $('#outbound-interval').value = Number(item.interval_menit) || 10;
+      $('#outbound-max-repeats').value = Number(item.max_repeats) || 20;
+      syncOutboundModalFields();
+      openModal('modal-outbound');
+    });
+  });
+
+  tbody.querySelectorAll('[data-del-outbound]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Hapus jadwal alarm nomor lain ini?')) return;
+      try {
+        await api(`/api/outbound/${btn.dataset.delOutbound}`, { method: 'DELETE' });
+        toast('Alarm nomor lain dihapus.', 'success');
+        loadOutbound();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    });
+  });
+
+  renderIcons();
+}
+
+function renderContactsList() {
+  const wrap = $('#contacts-list');
+  if (!wrap) return;
+  if (!state.outboundContacts.length) {
+    wrap.innerHTML = '<div class="text-xs muted">Belum ada kontak tersimpan. Tambahkan nama alias di atas supaya mudah memanggil lewat WhatsApp.</div>';
+    return;
+  }
+  wrap.innerHTML = state.outboundContacts
+    .map(
+      (c) => `
+      <div class="mini-item">
+        <div>
+          <div class="fw-600 text-sm">${escapeHtml(c.nama)}</div>
+          <div class="text-xs muted mono">${escapeHtml(c.nomor)}${c.catatan ? ` • ${escapeHtml(c.catatan)}` : ''}</div>
+        </div>
+        <button class="icon-btn danger" type="button" data-del-contact="${c.id}" title="Hapus Kontak" aria-label="Hapus Kontak">
+          <i data-lucide="trash-2" class="icon-14"></i>
+        </button>
+      </div>`
+    )
+    .join('');
+
+  wrap.querySelectorAll('[data-del-contact]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try {
+        await api(`/api/contacts/${btn.dataset.delContact}`, { method: 'DELETE' });
+        toast('Kontak dihapus.', 'success');
+        loadOutbound();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    });
+  });
+
+  renderIcons();
+}
+
+function syncOutboundModalFields() {
+  const mode = $('#outbound-mode')?.value || 'HARIAN';
+  const isNow = mode === 'SEKARANG';
+  $('#outbound-schedule-row')?.classList.toggle('hidden', isNow);
+  $('#field-outbound-hari')?.classList.toggle('hidden', mode !== 'MINGGUAN');
+  $('#field-outbound-tanggal')?.classList.toggle('hidden', mode !== 'SEKALI');
+  $('#field-outbound-jam')?.classList.toggle('hidden', isNow);
+  const repeatOn = Boolean($('#outbound-repeat-ok')?.checked);
+  $('#field-outbound-repeat-opts')?.classList.toggle('hidden', !repeatOn);
+  const submitBtn = $('#btn-submit-outbound');
+  if (submitBtn) submitBtn.textContent = isNow ? 'Kirim Sekarang' : 'Simpan Alarm';
 }
 
 /* ==================== TAB 3: TUGAS ==================== */
@@ -3021,6 +3297,89 @@ function bindFormsAndActions() {
     }
   });
 
+  // Outbound Alarms & Contacts modals
+  $('#btn-open-contacts-modal')?.addEventListener('click', () => {
+    loadOutbound();
+    openModal('modal-contacts');
+  });
+
+  $('#form-contact')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      await api('/api/contacts', {
+        method: 'POST',
+        body: JSON.stringify({
+          nama: $('#contact-nama').value.trim(),
+          nomor: $('#contact-nomor').value.trim(),
+          catatan: $('#contact-catatan').value.trim(),
+        }),
+      });
+      $('#form-contact').reset();
+      toast('Kontak tersimpan.', 'success');
+      loadOutbound();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+
+  $('#outbound-contact-select')?.addEventListener('change', (e) => {
+    const sel = e.target;
+    const opt = sel.options[sel.selectedIndex];
+    if (sel.value) {
+      $('#outbound-target-nomor').value = sel.value;
+      if (opt?.dataset?.name) $('#outbound-target-nama').value = opt.dataset.name;
+    }
+  });
+
+  $('#outbound-mode')?.addEventListener('change', syncOutboundModalFields);
+  $('#outbound-repeat-ok')?.addEventListener('change', syncOutboundModalFields);
+
+  $('#btn-open-outbound-modal')?.addEventListener('click', () => {
+    $('#modal-outbound-title').textContent = 'Buat Alarm ke Nomor Lain';
+    $('#form-outbound').reset();
+    $('#outbound-id').value = '';
+    $('#outbound-mode').value = 'HARIAN';
+    $('#outbound-tanggal').value = getTodayWibStr();
+    $('#outbound-jam').value = '06:00';
+    $('#outbound-repeat-ok').checked = true;
+    $('#outbound-interval').value = 10;
+    $('#outbound-max-repeats').value = 20;
+    populateOutboundContactSelect();
+    syncOutboundModalFields();
+    openModal('modal-outbound');
+  });
+
+  $('#form-outbound')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const id = $('#outbound-id').value;
+    const mode = $('#outbound-mode').value;
+    const body = {
+      target_nama: $('#outbound-target-nama').value.trim(),
+      target_nomor: $('#outbound-target-nomor').value.trim(),
+      pesan: $('#outbound-pesan').value.trim(),
+      mode,
+      hari: mode === 'MINGGUAN' ? $('#outbound-hari').value : null,
+      tanggal: mode === 'SEKALI' ? $('#outbound-tanggal').value : null,
+      jam: mode === 'SEKARANG' ? undefined : $('#outbound-jam').value,
+      repeat_until_ok: $('#outbound-repeat-ok').checked ? 1 : 0,
+      interval_menit: Number($('#outbound-interval').value) || 10,
+      max_repeats: Number($('#outbound-max-repeats').value) || 20,
+    };
+    try {
+      if (id && mode !== 'SEKARANG') {
+        await api(`/api/outbound/${id}`, { method: 'PUT', body: JSON.stringify(body) });
+        toast('Alarm nomor lain diperbarui.', 'success');
+      } else {
+        await api('/api/outbound', { method: 'POST', body: JSON.stringify(body) });
+        toast(mode === 'SEKARANG' ? 'Alarm langsung dikirim ke nomor tujuan.' : 'Alarm nomor lain tersimpan.', 'success');
+      }
+      closeModal('modal-outbound');
+      loadOutbound();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+
   // Tugas filters & modal
   $$('[data-tugas-filter]').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -3780,6 +4139,8 @@ function connectLiveEvents() {
       if (mod === 'jadwal') {
         loadJadwal();
         loadCalendarInfo();
+      } else if (mod === 'outbound') {
+        loadOutbound();
       } else if (mod === 'tugas') {
         loadTugas();
         loadCalendarInfo();
@@ -3801,6 +4162,7 @@ function connectLiveEvents() {
       if (payload.source === 'whatsapp') {
         const labels = {
           jadwal: 'Jadwal baru masuk dari WhatsApp.',
+          outbound: 'Alarm ke nomor lain diperbarui dari WhatsApp.',
           tugas: 'Tugas diperbarui dari WhatsApp.',
           catatan: 'Catatan kuliah/ide baru masuk dari WhatsApp.',
           memori: 'Memori baru masuk dari WhatsApp.',
@@ -3824,7 +4186,7 @@ async function refreshActiveTab() {
   if (state.activeTab === 'overview') {
     jobs.push(loadTelemetry(), loadHabits(), loadReminders(), loadFocus());
   } else if (state.activeTab === 'jadwal') {
-    jobs.push(loadJadwal(), loadCalendarInfo());
+    jobs.push(loadJadwal(), loadOutbound(), loadCalendarInfo());
   } else if (state.activeTab === 'tugas') {
     jobs.push(loadTugas());
   } else if (state.activeTab === 'catatan') {
@@ -3849,6 +4211,7 @@ async function refreshAll() {
     loadReminders(),
     loadFocus(),
     loadJadwal(),
+    loadOutbound(),
     loadCalendarInfo(),
     loadTugas(),
     loadCatatan(),

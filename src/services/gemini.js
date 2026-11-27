@@ -1,5 +1,12 @@
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
-import { aiLogRepo, inferIsPresensi, inferRingLoud, normalizeCategory, normalizeIncomeCategory } from '../config/db.js';
+import {
+  aiLogRepo,
+  inferIsPresensi,
+  inferRingLoud,
+  normalizeCategory,
+  normalizeIncomeCategory,
+  normalizeWaPhone,
+} from '../config/db.js';
 import {
   HARI_ID,
   getWibParts,
@@ -434,6 +441,127 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
       reply_message: 'Siap, pengingat ditunda!',
       payload: { menit_tunda: Number(snoozeMatch[1]) },
     };
+  }
+
+  // 4A-EXT1. Save contact alias ("simpan kontak pacar 08123456789", "catat nomor budi 628123456789")
+  const saveContactMatch = clean.match(
+    /^(?:tolong\s+)?(?:simpan|catat|tambah(?:kan)?|save)\s+(?:kontak|nomor(?:\s+wa)?)\s+([a-zA-Z0-9\s._-]{2,30}?)\s+([+\d][\d\s\-()]{8,18})$/i
+  );
+  if (saveContactMatch) {
+    const nama = saveContactMatch[1].trim();
+    const nomor = normalizeWaPhone(saveContactMatch[2]);
+    if (nama && nomor) {
+      return {
+        intent: 'SIMPAN_KONTAK',
+        reply_message: 'Siap, kontak tujuan langsung disimpan!',
+        payload: {
+          target_kontak: nama.charAt(0).toUpperCase() + nama.slice(1),
+          kata_kunci: nomor,
+          isi_catatan: nomor,
+        },
+      };
+    }
+  }
+
+  // 4A-EXT2. Stop outbound alarm ("stop alarm ke pacar", "matikan pengingat ke 08123456789", "hentikan alarm orang lain")
+  const stopOutboundMatch = clean.match(
+    /^(?:tolong\s+)?(?:stop|hentikan|matikan|batal(?:kan)?)\s+(?:semua\s+)?(?:alarm|pengingat)(?:\s+(?:ke|untuk|buat))?\s+(.+)$/i
+  );
+  if (stopOutboundMatch && !/\b(fokus|focus|pomodoro|presensi)\b/i.test(clean)) {
+    const rawTarget = stopOutboundMatch[1]
+      .replace(/\b(orang\s+lain|nomor\s+lain|semua)\b/gi, '')
+      .trim();
+    return {
+      intent: 'STOP_ALARM_ORANG',
+      reply_message: 'Siap, menghentikan alarm ke nomor tujuan...',
+      payload: {
+        target_kontak: rawTarget || 'SEMUA',
+        kata_kunci: rawTarget || 'SEMUA',
+        isi_catatan: '',
+      },
+    };
+  }
+
+  // 4A-EXT3. Outbound alarm to another contact/number ("setiap hari jam 6 pagi kirim alarm ke pacar Bangun tidur tiap 10 menit sampai balas ok", "kirim alarm ke 08123456789 sekarang Bangun tiap 5 menit")
+  const outboundLead = clean.match(
+    /(?:kirim(?:kan)?|pasang(?:kan)?|buat(?:kan)?)\s+(?:alarm|pengingat)\s+(?:ke|untuk)\s+([+\d][\d\-]{7,16}|[a-zA-Z][a-zA-Z0-9._-]{1,24})\b/i
+  ) || clean.match(
+    /(?:ingetin|ingatkan|bangunin)\s+([+\d][\d\-]{7,16}|pacar|doi|dia)\b/i
+  );
+  if (outboundLead && !/\b(tunda|snooze)\b/i.test(clean)) {
+    const rawTarget = outboundLead[1].trim();
+    const isNow = /\b(sekarang|langsung|saat\s+ini)\b/i.test(clean);
+    const isDaily = /\b(setiap\s+hari|tiap\s+hari|harian)\b/i.test(clean);
+    const relDate = resolveRelativeIndonesianDate(clean, now);
+    const isWeekly = !isDaily && /\b(tiap|setiap|rutin)\b/i.test(clean) && Boolean(relDate?.hari);
+    const clockMatch = clean.match(
+      /\b(?:mulai\s+)?(?:jam|pukul|pkl)\s*(\d{1,2})(?:[:.](\d{2}))?(?:\s*(pagi|siang|sore|malam|dini\s+hari))?\b/i
+    );
+    const intervalMatch = clean.match(/\b(?:tiap|setiap|interval)\s+(\d{1,3})\s*(?:menit|mnt|m)\b/i);
+    const maxMatch = clean.match(/\b(?:maks(?:imal)?|max)\s+(\d{1,2})\s*(?:x|kali)?\b/i);
+    const explicitOnce = /\b(sekali\s+saja|1x\s+saja|tanpa\s+ulang|jangan\s+ulang)\b/i.test(clean);
+
+    let jam = null;
+    if (clockMatch) {
+      let hour = Number(clockMatch[1]);
+      const min = clockMatch[2] !== undefined ? Number(clockMatch[2]) : 0;
+      const period = (clockMatch[3] || '').toLowerCase().trim();
+      if (Number.isInteger(hour) && hour >= 0 && hour <= 23 && Number.isInteger(min) && min >= 0 && min <= 59) {
+        if (period === 'siang' && hour >= 1 && hour <= 5) hour += 12;
+        else if (period === 'sore' && hour >= 1 && hour <= 7) hour += 12;
+        else if (period === 'malam') hour = hour === 12 ? 0 : hour <= 11 ? hour + 12 : hour;
+        else if ((period === 'pagi' || period === 'dini hari') && hour === 12) hour = 0;
+        jam = `${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+      }
+    }
+
+    if (isNow || jam) {
+      const quoted = clean.match(/["“'‘]([^"”'’]+)["”'’]/);
+      let pesan = quoted ? quoted[1].trim() : '';
+      if (!pesan) {
+        pesan = clean
+          .replace(outboundLead[0], ' ')
+          .replace(/\b(?:tolong|setiap\s+hari|tiap\s+hari|harian|rutin|tiap|setiap|mulai|dari|sekarang|langsung|saat\s+ini)\b/gi, ' ')
+          .replace(relDate ? relDate.matchedText : '', ' ')
+          .replace(clockMatch ? clockMatch[0] : '', ' ')
+          .replace(intervalMatch ? intervalMatch[0] : '', ' ')
+          .replace(maxMatch ? maxMatch[0] : '', ' ')
+          .replace(/\b(?:ulang(?:i)?|diulang|sampai\s+(?:dia\s+)?(?:balas|jawab)\s*(?:ok|oke)|sampai\s+(?:ok|oke)|sekali\s+saja|1x\s+saja|tanpa\s+ulang|jangan\s+ulang|pesan(?:nya)?|isi(?:nya)?)\b/gi, ' ')
+          .replace(/^(?:untuk|buat|bilang|kasih\s+tahu)\s+/i, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+      }
+      if (!pesan) pesan = 'Jangan lupa ya!';
+      pesan = pesan.charAt(0).toUpperCase() + pesan.slice(1);
+
+      const modeJadwal = isNow ? 'SEKARANG' : isDaily ? 'HARIAN' : isWeekly ? 'MINGGUAN' : 'SEKALI';
+      const resolvedDate =
+        modeJadwal === 'SEKALI'
+          ? relDate
+            ? relDate.dateStr
+            : jam > nowParts.timeStr
+              ? nowParts.dateStr
+              : shiftDateStr(nowParts.dateStr, 1)
+          : null;
+
+      return {
+        intent: 'KIRIM_ALARM_ORANG',
+        reply_message: 'Siap, alarm ke nomor tujuan langsung diproses!',
+        payload: {
+          target_kontak: rawTarget,
+          mode_jadwal: modeJadwal,
+          hari: modeJadwal === 'MINGGUAN' ? relDate?.hari || nowParts.hari : null,
+          tanggal: resolvedDate,
+          jam: jam || nowParts.timeStr,
+          ulang_sampai_ok: !explicitOnce,
+          interval_menit: intervalMatch ? Number(intervalMatch[1]) : 10,
+          max_repeats: maxMatch ? Number(maxMatch[1]) : 20,
+          judul: pesan,
+          isi_catatan: pesan,
+          kata_kunci: rawTarget,
+        },
+      };
+    }
   }
 
   // 4B. Quick Reminder ("ingetin 30 menit lagi angkat jemuran", "ingatkan 2 jam lagi bayar kos pakai ring")
@@ -906,6 +1034,9 @@ export const INTENTS = [
   'CEK_JADWAL',
   'SNOOZE_JADWAL',
   'TAMBAH_REMINDER',
+  'KIRIM_ALARM_ORANG',
+  'STOP_ALARM_ORANG',
+  'SIMPAN_KONTAK',
   'TAMBAH_TUGAS',
   'SELESAI_TUGAS',
   'CEK_TUGAS',
@@ -961,6 +1092,27 @@ const RESPONSE_SCHEMA = {
         ring_loud: {
           type: Type.BOOLEAN,
           description: 'true jika pengguna meminta dering keras/telpon/call/alarm keras/bangunin ("pakai ring", "ring", "dering keras", "telpon aku", "call", "bangunin") agar MacroDroid di HP berdering keras. false jika tidak diminta atau pengguna menulis "tanpa ring".',
+        },
+        target_kontak: {
+          type: Type.STRING,
+          description: 'Nama kontak alias (misal "Pacar") atau nomor WA tujuan (misal "08123456789") khusus KIRIM_ALARM_ORANG / STOP_ALARM_ORANG / SIMPAN_KONTAK.',
+        },
+        mode_jadwal: {
+          type: Type.STRING,
+          enum: ['SEKARANG', 'SEKALI', 'HARIAN', 'MINGGUAN'],
+          description: 'Mode waktu kirim untuk KIRIM_ALARM_ORANG: SEKARANG (langsung), SEKALI (tanggal+jam), HARIAN (setiap hari jam tertentu), MINGGUAN (hari tertentu).',
+        },
+        ulang_sampai_ok: {
+          type: Type.BOOLEAN,
+          description: 'true jika KIRIM_ALARM_ORANG diulang terus sampai penerima membalas "ok", false jika 1x kirim saja.',
+        },
+        interval_menit: {
+          type: Type.INTEGER,
+          description: 'Interval pengulangan dalam menit (min 2, default 10) untuk KIRIM_ALARM_ORANG.',
+        },
+        max_repeats: {
+          type: Type.INTEGER,
+          description: 'Batas maksimal pengulangan (default 20, max 60) untuk KIRIM_ALARM_ORANG.',
         },
         menit_tunda: { type: Type.INTEGER, description: 'Jumlah menit tunda untuk SNOOZE_JADWAL.' },
         isi_catatan: { type: Type.STRING, description: 'Ringkasan memori pacar, catatan wishlist/momen, atau konten URL/teks untuk vault.' },
@@ -1092,6 +1244,11 @@ FORMAT OUTPUT JSON WAJIB (hanya keluarkan 1 objek JSON valid tanpa teks tambahan
     "is_rutin": true/false,
     "is_presensi": true/false (true HANYA untuk jadwal presensi/absen/kuliah/kelas/praktikum/KRS; false untuk alarm biasa/pengingat kegiatan umum),
     "ring_loud": true/false (true jika pengguna meminta ring/dering keras/telpon/call/alarm keras/bangunin; false jika tidak),
+    "target_kontak": "string (nama kontak alias atau nomor WA tujuan khusus KIRIM_ALARM_ORANG/STOP_ALARM_ORANG/SIMPAN_KONTAK)",
+    "mode_jadwal": "SEKARANG|SEKALI|HARIAN|MINGGUAN (khusus KIRIM_ALARM_ORANG)",
+    "ulang_sampai_ok": true/false (khusus KIRIM_ALARM_ORANG),
+    "interval_menit": integer_menit_default_10,
+    "max_repeats": integer_max_default_20,
     "menit_tunda": integer,
     "isi_catatan": "string (ringkasan memori / detail wishlist / isi link/teks bersih untuk vault)",
     "kata_kunci": "string (judul singkat Title Case 2-4 kata untuk vault / keyword pencarian)",
@@ -1437,6 +1594,10 @@ ATURAN KLASIFIKASI INTENT:
 13. REKAP_PENGELUARAN: Pengguna meminta rekap keuangan, saldo, pemasukan, atau pengeluaran ("Pengeluaran hari ini berapa?", "rekap keuangan bulan ini", "saldo bulan ini berapa?", "rekap jajan minggu ini").
     - Hitung payload.tanggal_mulai dan payload.tanggal_akhir (YYYY-MM-DD) secara tepat berdasarkan ${nowParts.dateStr}.
 14. TAMBAH_REMINDER: Pengingat cepat berbasis durasi ("ingetin 30 menit lagi matiin kompor", "ingatkan 2 jam lagi bayar kos pakai ring"). Isi payload.menit_tunda (integer menit), payload.judul (pesan pengingat), dan payload.ring_loud = true jika pengguna menyebut ring/dering/telpon/call/alarm keras.
+14B. KIRIM_ALARM_ORANG: Pengguna menyuruh bot mengirim alarm/pengingat ke NOMOR WA LAIN atau kontak tersimpan (misal "kirim alarm ke pacar mulai jam 6 pagi 'Bangun tidur!' tiap 10 menit sampai jawab ok", "setiap hari jam 06:00 ingatkan 08123456789 bangun kuliah", "kirim alarm ke pacar sekarang minum obat").
+    - Isi payload.target_kontak (nama kontak misal "pacar" atau nomor WA), payload.isi_catatan (isi pesan untuk penerima), payload.mode_jadwal ("SEKARANG", "SEKALI", "HARIAN", atau "MINGGUAN"), payload.jam (HH:MM), payload.tanggal (YYYY-MM-DD jika SEKALI), payload.hari (jika MINGGUAN), payload.ulang_sampai_ok (default true, false jika "sekali saja"), payload.interval_menit (default 10), payload.max_repeats (default 20).
+14C. STOP_ALARM_ORANG: Pengguna menyuruh menghentikan alarm yang sedang berjalan ke nomor lain ("stop alarm ke pacar", "matikan pengingat ke 08123456789"). Isi payload.target_kontak (atau "SEMUA").
+14D. SIMPAN_KONTAK: Pengguna menyimpan nomor kontak alias untuk fitur kirim alarm ("simpan kontak pacar 08123456789"). Isi payload.target_kontak (nama kontak) dan payload.kata_kunci (nomor WA).
 15. REKOMENDASI_PACAR: Pengguna meminta rekomendasi tempat kencan/date ("Weekend ini enaknya ngajak dia ke mana?", "Saran tempat nongkrong buat date") atau rekomendasi kado/hadiah buat pacar ("Kasih rekomendasi kado buat dia di bawah 200rb", "Ide hadiah buat ultah pacar").
     - Isi payload.kata_kunci dengan konteks permintaan user.
     - Jika disebutkan batas anggaran/budget (misal "di bawah 200rb"), isi payload.budget sebagai integer Rupiah (200000).

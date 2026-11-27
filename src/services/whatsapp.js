@@ -13,12 +13,17 @@ import {
   PROJECT_ROOT,
   VAULT_UPLOADS_DIR,
   catatanRepo,
+  contactRepo,
   focusRepo,
   habitRepo,
   inferIsPresensi,
   inferRingLoud,
   jadwalRepo,
   memoriRepo,
+  normalizeOutboundMode,
+  normalizeWaPhone,
+  outboundAlarmRepo,
+  outboundPendingRepo,
   pengeluaranRepo,
   presensiPendingRepo,
   reminderRepo,
@@ -49,7 +54,12 @@ import {
 } from './gemini.js';
 import { handleSlashCommand } from './commands.js';
 import { emitDataChange } from './events.js';
-import { getLastReminder, registerWhatsAppSender } from './notifier.js';
+import {
+  getLastReminder,
+  registerTargetWhatsAppSender,
+  registerWhatsAppSender,
+  sendDualNotification,
+} from './notifier.js';
 
 const AUTH_DIR = path.join(PROJECT_ROOT, 'auth_info_baileys');
 const baileysLogger = pino({ level: 'silent' });
@@ -121,6 +131,29 @@ export async function sendTextToOwner(text) {
     throw new Error('WhatsApp belum terhubung.');
   }
   return sock.sendMessage(jid, { text });
+}
+
+export async function sendTextToNumber(phoneNumber, text) {
+  const clean = normalizeWaPhone(phoneNumber);
+  if (!clean) throw new Error('Nomor WhatsApp tujuan tidak valid.');
+  if (!sock || waState.status !== 'connected') {
+    throw new Error('WhatsApp belum terhubung.');
+  }
+  return sock.sendMessage(`${clean}@s.whatsapp.net`, { text });
+}
+
+export function resolveOutboundTarget(query) {
+  const raw = String(query || '').trim();
+  if (!raw) return null;
+  const saved = contactRepo.findByNameOrNumber(raw);
+  if (saved) {
+    return { target_nama: saved.nama, target_nomor: saved.nomor };
+  }
+  const phone = normalizeWaPhone(raw);
+  if (phone) {
+    return { target_nama: phone, target_nomor: phone };
+  }
+  return null;
 }
 
 export async function sendDocumentToOwner(filePath, fileName, caption = '', mimetype = 'application/octet-stream') {
@@ -1041,6 +1074,141 @@ export async function executeIntent({
       };
     }
 
+    case 'SIMPAN_KONTAK': {
+      const nama = String(payload.target_kontak || payload.judul || '').trim();
+      const nomorRaw = String(payload.kata_kunci || payload.isi_catatan || rawText || '').trim();
+      const cleanNomor = normalizeWaPhone(nomorRaw);
+      if (!nama || !cleanNomor) {
+        return {
+          text: 'Format simpan kontak belum lengkap. Contoh: *"simpan kontak pacar 08123456789"* atau `/kontak pacar 08123456789`.',
+        };
+      }
+      const saved = contactRepo.upsert({ nama, nomor: cleanNomor });
+      emitDataChange('outbound', 'whatsapp');
+      return {
+        text: `✅ *Kontak Tersimpan:*\n• Nama: *${saved.nama}*\n• Nomor WA: \`${saved.nomor}\`\n\nSekarang kamu bisa kirim alarm cukup dengan menyebut namanya, misal:\n_"Setiap hari jam 06:00 kirim alarm ke ${saved.nama} Bangun pagi tiap 10 menit sampai balas ok"_`,
+      };
+    }
+
+    case 'KIRIM_ALARM_ORANG': {
+      const rawTarget = String(payload.target_kontak || payload.kata_kunci || '').trim();
+      const resolved = resolveOutboundTarget(rawTarget);
+      if (!resolved) {
+        return {
+          text:
+            `Kontak *"${rawTarget || '-'}"* belum terdaftar dan bukan nomor WA valid.\n` +
+            `Simpan dulu dengan \`/kontak ${rawTarget || 'pacar'} 0812xxxxxxxx\` atau sebutkan langsung nomor HP-nya!`,
+        };
+      }
+
+      const pesan = String(payload.isi_catatan || payload.judul || '').trim() || 'Jangan lupa ya!';
+      const modeRaw = String(payload.mode_jadwal || 'SEKALI').trim().toUpperCase();
+      const repeatUntilOk = payload.ulang_sampai_ok === false ? 0 : 1;
+      const intervalMenit = Math.max(2, Math.min(180, Math.round(Number(payload.interval_menit) || 10)));
+      const maxRepeats = Math.max(1, Math.min(60, Math.round(Number(payload.max_repeats) || 20)));
+
+      if (modeRaw === 'SEKARANG') {
+        const { triggerOutboundAlarmNow } = await import('./scheduler.js');
+        await triggerOutboundAlarmNow(
+          {
+            target_nama: resolved.target_nama,
+            target_nomor: resolved.target_nomor,
+            pesan,
+            repeat_until_ok: repeatUntilOk,
+            interval_menit: intervalMenit,
+            max_repeats: maxRepeats,
+          },
+          now
+        );
+        const modeInfo = repeatUntilOk
+          ? `Ulang tiap *${intervalMenit} menit* sampai dia balas *"ok"* (maks ${maxRepeats}x)`
+          : 'Kirim 1x saja';
+        return {
+          text:
+            `📤 *Alarm Terkirim Sekarang!*\n` +
+            `• Tujuan: *${resolved.target_nama}* (\`${resolved.target_nomor}\`)\n` +
+            `• Pesan: *${pesan}*\n` +
+            `• Mode: ${modeInfo}\n\n` +
+            `_Ketik \`/stopkirim\` kapan saja untuk menghentikan manual._`,
+        };
+      }
+
+      const cleanJam = normalizeJam(payload.jam);
+      if (!cleanJam) {
+        return {
+          text: 'Jam mulai alarm ke nomor tujuan belum terbaca. Contoh: *"jam 06:00 pagi"* atau *"sekarang"*.',
+        };
+      }
+
+      const dbMode = normalizeOutboundMode(modeRaw);
+      const saved = outboundAlarmRepo.create({
+        target_nama: resolved.target_nama,
+        target_nomor: resolved.target_nomor,
+        pesan,
+        mode: dbMode,
+        hari: payload.hari || nowParts.hari,
+        tanggal: dbMode === 'SEKALI' ? normalizeDateStr(payload.tanggal) || nowParts.dateStr : null,
+        jam: cleanJam,
+        repeat_until_ok: repeatUntilOk,
+        interval_menit: intervalMenit,
+        max_repeats: maxRepeats,
+        aktif: 1,
+      });
+
+      emitDataChange('outbound', 'whatsapp');
+      const jadwalDesc =
+        saved.mode === 'HARIAN'
+          ? `Setiap Hari mulai pukul *${saved.jam} WIB*`
+          : saved.mode === 'MINGGUAN'
+            ? `Tiap ${saved.hari} mulai pukul *${saved.jam} WIB*`
+            : `${saved.hari}, ${saved.tanggal} mulai pukul *${saved.jam} WIB*`;
+      const repeatDesc = saved.repeat_until_ok
+        ? `Ulang tiap *${saved.interval_menit} menit* sampai dia balas *"ok"* (maks ${saved.max_repeats}x)`
+        : '1x kirim saja (tanpa ulang)';
+
+      return {
+        text:
+          `${reply_message}\n\n` +
+          `📤 *Alarm Nomor Lain Tersimpan:*\n` +
+          `• Tujuan: *${saved.target_nama}* (\`${saved.target_nomor}\`)\n` +
+          `• Pesan: *${saved.pesan}*\n` +
+          `• Jadwal: ${jadwalDesc}\n` +
+          `• Pengulangan: ${repeatDesc}`,
+      };
+    }
+
+    case 'STOP_ALARM_ORANG': {
+      const rawTarget = String(payload.target_kontak || payload.kata_kunci || '').trim();
+      const stopAll = !rawTarget || /^semua$/i.test(rawTarget);
+      let stopped = [];
+      if (stopAll) {
+        stopped = outboundPendingRepo.acknowledgeAll(nowParts.dateTimeStr, 'OWNER');
+      } else {
+        const resolved = resolveOutboundTarget(rawTarget);
+        if (resolved) {
+          stopped = outboundPendingRepo.acknowledgeByPhone(resolved.target_nomor, nowParts.dateTimeStr, 'OWNER');
+        } else {
+          const allActive = outboundPendingRepo.listActive();
+          const low = rawTarget.toLowerCase();
+          for (const row of allActive) {
+            if (row.target_nama.toLowerCase().includes(low) || row.pesan.toLowerCase().includes(low)) {
+              const s = outboundPendingRepo.acknowledgeById(row.id, nowParts.dateTimeStr, 'OWNER');
+              if (s) stopped.push(s);
+            }
+          }
+        }
+      }
+
+      if (!stopped.length) {
+        return { text: '✅ Tidak ada alarm nomor lain yang sedang berulang aktif saat ini.' };
+      }
+      emitDataChange('outbound', 'whatsapp');
+      const lines = stopped.map((s) => `• *${s.target_nama}* (\`${s.target_nomor}\`) — ${s.pesan}`).join('\n');
+      return {
+        text: `🛑 *Alarm Nomor Lain Dihentikan (${stopped.length}):*\n${lines}`,
+      };
+    }
+
     case 'SIMPAN_CATATAN': {
       const sumberTipe =
         mediaType === 'audio' ? 'VOICE' : mediaType === 'image' ? 'IMAGE' : 'TEXT';
@@ -1171,6 +1339,101 @@ export async function executeIntent({
 
 const PRESENSI_OK_RE =
   /^(?:ok|oke|okey|okay|sip|siap|udah|sudah|done|beres|aman|acc|(?:udah|sudah|ok|oke)\s+(?:presensi|absen))[.!\s👍✅👌]*$/i;
+
+const TARGET_OK_RE =
+  /^(?:ok|oke|okey|okay|sip|siap|udah|sudah|done|beres|aman|iya|ya|udah\s+bangun|sudah\s+bangun|ok\s+makasih|oke\s+makasih|makasih\s+ok|makasih\s+oke)[.!\s👍✅👌🙏]*$/i;
+
+/**
+ * Extract normalized WhatsApp phone number from a private non-owner incoming message key.
+ * Rejects fromMe, groups, broadcasts, and newsletters.
+ */
+export function extractSenderPhone(msgKey) {
+  if (!msgKey || msgKey.fromMe !== false) return null;
+  const remoteJid = msgKey.remoteJid || '';
+  const remoteJidAlt = msgKey.remoteJidAlt || '';
+  if (
+    !remoteJid ||
+    remoteJid.endsWith('@g.us') ||
+    remoteJid === 'status@broadcast' ||
+    remoteJid.endsWith('@newsletter')
+  ) {
+    return null;
+  }
+
+  const candidate = remoteJid.endsWith('@s.whatsapp.net')
+    ? remoteJid
+    : remoteJidAlt.endsWith('@s.whatsapp.net')
+      ? remoteJidAlt
+      : '';
+  if (!candidate) return null;
+
+  const rawDigits = candidate.split('@')[0].split(':')[0];
+  return normalizeWaPhone(rawDigits);
+}
+
+/**
+ * Strict Zero-Leak handler for non-owner target numbers replying "ok" to an active outbound alarm.
+ * Returns null (Silent Drop) if the sender has no active repeating outbound alarm OR message is not "ok".
+ */
+export function handleTargetOkReply(msgKey, text, now = new Date()) {
+  const senderPhone = extractSenderPhone(msgKey);
+  if (!senderPhone) return null;
+
+  const ownerNum = getOwnerNumber();
+  if (ownerNum && senderPhone === ownerNum) return null;
+
+  const activeForPhone = outboundPendingRepo.listActiveByPhone(senderPhone);
+  if (!activeForPhone.length) return null;
+
+  const clean = String(text || '').trim();
+  if (!clean || !TARGET_OK_RE.test(clean)) return null;
+
+  const nowParts = getWibParts(now);
+  const acked = outboundPendingRepo.acknowledgeByPhone(senderPhone, nowParts.dateTimeStr, 'TARGET');
+  if (!acked.length) return null;
+
+  emitDataChange('outbound', 'whatsapp');
+
+  const first = acked[0];
+  const msgSummary = acked.map((a) => `*"${a.pesan}"*`).join(', ');
+  return {
+    targetPhone: senderPhone,
+    targetNama: first.target_nama,
+    ackedCount: acked.length,
+    targetReply: '✅ Terima kasih sudah konfirmasi! Pengingat berulang sudah dihentikan.',
+    ownerReport:
+      `✅ *Alarm Nomor Lain Dikonfirmasi!*\n` +
+      `• Penerima: *${first.target_nama}* (\`${senderPhone}\`)\n` +
+      `• Pesan: ${msgSummary}\n` +
+      `• Balasan: "${clean}" (${nowParts.timeStr} WIB)\n` +
+      `Pengingat berulang sudah dihentikan otomatis.`,
+  };
+}
+
+async function processTargetOkMessage(rawMsg) {
+  const extracted = extractMessagePayload(rawMsg);
+  if (!extracted || !extracted.text) return;
+
+  const outcome = handleTargetOkReply(rawMsg.key, extracted.text);
+  if (!outcome) return; // Strict Silent Drop
+
+  try {
+    await sock.sendMessage(rawMsg.key.remoteJid, { text: outcome.targetReply }, { quoted: rawMsg });
+  } catch (err) {
+    console.error('[WhatsApp] Failed replying target OK ack:', err?.message || err);
+  }
+
+  try {
+    await sendDualNotification(
+      `✅ Konfirmasi Alarm: ${outcome.targetNama}`,
+      outcome.ownerReport,
+      '/#jadwal',
+      { recordForSnooze: false, tag: `outbound-ack-${outcome.targetPhone}-${Date.now()}` }
+    );
+  } catch (err) {
+    console.error('[WhatsApp] Failed sending owner ack report:', err?.message || err);
+  }
+}
 
 /**
  * 0ms instant acknowledgment for repeating presensi reminders when user replies "ok".
@@ -1334,6 +1597,7 @@ export async function initWhatsApp() {
     });
 
     registerWhatsAppSender(sendTextToOwner);
+    registerTargetWhatsAppSender(sendTextToNumber);
 
     sock.ev.on('creds.update', saveCreds);
 
@@ -1405,13 +1669,16 @@ export async function initWhatsApp() {
         if (!msg.message) continue;
 
         // STRICT SINGLE-USER WHITELIST + SILENT DROP (PRD Section 2.2)
-        if (!isAllowedSender(msg.key)) {
+        if (isAllowedSender(msg.key)) {
+          processAllowedMessage(msg).catch((err) => {
+            console.error('[WhatsApp] Uncaught message handler error:', err);
+          });
           continue;
         }
 
-        // Process owner message asynchronously without blocking other events
-        processAllowedMessage(msg).catch((err) => {
-          console.error('[WhatsApp] Uncaught message handler error:', err);
+        // NARROW ZERO-LEAK EXCEPTION: Only allow active outbound alarm targets to reply "ok" to stop their own reminder
+        processTargetOkMessage(msg).catch((err) => {
+          console.error('[WhatsApp] Uncaught target ok handler error:', err);
         });
       }
     });

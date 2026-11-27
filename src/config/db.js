@@ -191,6 +191,48 @@ db.exec(`
     acknowledged_at TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS target_contacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nama TEXT NOT NULL,
+    nomor TEXT NOT NULL UNIQUE,
+    catatan TEXT DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS outbound_alarms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_nama TEXT NOT NULL,
+    target_nomor TEXT NOT NULL,
+    pesan TEXT NOT NULL,
+    mode TEXT DEFAULT 'SEKALI',
+    hari TEXT,
+    tanggal TEXT,
+    jam TEXT NOT NULL,
+    repeat_until_ok INTEGER DEFAULT 1,
+    interval_menit INTEGER DEFAULT 10,
+    max_repeats INTEGER DEFAULT 20,
+    aktif INTEGER DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS outbound_pending (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alarm_id INTEGER,
+    target_nama TEXT NOT NULL,
+    target_nomor TEXT NOT NULL,
+    pesan TEXT NOT NULL,
+    tanggal TEXT NOT NULL,
+    jam_awal TEXT NOT NULL,
+    interval_menit INTEGER DEFAULT 10,
+    max_repeats INTEGER DEFAULT 20,
+    next_trigger_at TEXT NOT NULL,
+    repeat_count INTEGER DEFAULT 1,
+    acknowledged INTEGER DEFAULT 0,
+    acknowledged_by TEXT DEFAULT '',
+    acknowledged_at TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 // Non-destructive column migrations for existing databases
@@ -2111,6 +2153,371 @@ export const auditRepo = {
   clear() {
     db.prepare('DELETE FROM access_logs').run();
     return true;
+  },
+};
+
+/* ==================== OUTBOUND ALARMS (KIRIM KE NOMOR LAIN) ==================== */
+export function normalizeWaPhone(input) {
+  let digits = String(input || '').replace(/\D/g, '');
+  if (!digits) return null;
+  if (digits.startsWith('00')) digits = digits.slice(2);
+  if (digits.startsWith('0')) digits = `62${digits.slice(1)}`;
+  else if (digits.startsWith('8')) digits = `62${digits}`;
+  if (digits.length < 9 || digits.length > 15) return null;
+  return digits;
+}
+
+export function normalizeOutboundMode(mode) {
+  const up = String(mode || '').trim().toUpperCase();
+  if (up === 'HARIAN' || up === 'DAILY' || up === 'SETIAP_HARI') return 'HARIAN';
+  if (up === 'MINGGUAN' || up === 'WEEKLY' || up === 'RUTIN') return 'MINGGUAN';
+  return 'SEKALI';
+}
+
+export const contactRepo = {
+  list() {
+    return db.prepare('SELECT * FROM target_contacts ORDER BY lower(nama) ASC, id ASC').all();
+  },
+
+  getById(id) {
+    return db.prepare('SELECT * FROM target_contacts WHERE id = ?').get(Number(id));
+  },
+
+  findByNameOrNumber(query) {
+    const raw = String(query || '').trim();
+    if (!raw) return null;
+    const lower = raw.toLowerCase();
+    const asPhone = normalizeWaPhone(raw);
+    const all = this.list();
+    if (asPhone) {
+      const byPhone = all.find((c) => c.nomor === asPhone);
+      if (byPhone) return byPhone;
+    }
+    return (
+      all.find((c) => c.nama.toLowerCase() === lower) ||
+      all.find((c) => c.nama.toLowerCase().includes(lower) || lower.includes(c.nama.toLowerCase())) ||
+      null
+    );
+  },
+
+  upsert({ nama, nomor, catatan = '' }) {
+    const cleanNama = String(nama || '').trim();
+    const cleanNomor = normalizeWaPhone(nomor);
+    if (!cleanNama) throw new Error('Nama kontak wajib diisi.');
+    if (!cleanNomor) throw new Error('Nomor WhatsApp tidak valid (gunakan format 08... atau 628...).');
+    db.prepare(`
+      INSERT INTO target_contacts (nama, nomor, catatan)
+      VALUES (?, ?, ?)
+      ON CONFLICT(nomor) DO UPDATE SET
+        nama = excluded.nama,
+        catatan = excluded.catatan
+    `).run(cleanNama, cleanNomor, String(catatan || '').trim());
+    return db.prepare('SELECT * FROM target_contacts WHERE nomor = ?').get(cleanNomor);
+  },
+
+  remove(id) {
+    const res = db.prepare('DELETE FROM target_contacts WHERE id = ?').run(Number(id));
+    return res.changes > 0;
+  },
+};
+
+export const outboundAlarmRepo = {
+  list({ aktif } = {}) {
+    if (aktif !== undefined && aktif !== null && aktif !== '') {
+      return db
+        .prepare('SELECT * FROM outbound_alarms WHERE aktif = ? ORDER BY jam ASC, id DESC')
+        .all(Number(aktif) ? 1 : 0);
+    }
+    return db.prepare('SELECT * FROM outbound_alarms ORDER BY aktif DESC, jam ASC, id DESC').all();
+  },
+
+  getById(id) {
+    return db.prepare('SELECT * FROM outbound_alarms WHERE id = ?').get(Number(id));
+  },
+
+  create({
+    target_nama = '',
+    target_nomor,
+    pesan,
+    mode = 'SEKALI',
+    hari = null,
+    tanggal = null,
+    jam,
+    repeat_until_ok = 1,
+    interval_menit = 10,
+    max_repeats = 20,
+    aktif = 1,
+  }) {
+    const cleanNomor = normalizeWaPhone(target_nomor);
+    const cleanPesan = String(pesan || '').trim();
+    const cleanJam = normalizeJam(jam);
+    if (!cleanNomor) throw new Error('Nomor tujuan tidak valid (contoh: 08123456789 atau 628123456789).');
+    if (!cleanPesan) throw new Error('Pesan alarm wajib diisi.');
+    if (!cleanJam) throw new Error('Format jam tidak valid (gunakan HH:MM).');
+
+    const contact = contactRepo.findByNameOrNumber(cleanNomor);
+    const cleanNama = String(target_nama || contact?.nama || cleanNomor).trim();
+    const cleanMode = normalizeOutboundMode(mode);
+
+    let cleanHari = null;
+    let cleanTanggal = null;
+    if (cleanMode === 'HARIAN') {
+      cleanHari = 'Setiap Hari';
+      cleanTanggal = null;
+    } else if (cleanMode === 'MINGGUAN') {
+      const days = String(hari || '')
+        .split(/[,;\s]+/)
+        .map((d) => normalizeHari(d))
+        .filter(Boolean);
+      cleanHari = days.length ? [...new Set(days)].join(', ') : getWibParts().hari;
+      cleanTanggal = null;
+    } else {
+      cleanTanggal = normalizeDateStr(tanggal) || getWibParts().dateStr;
+      cleanHari = getHariFromDateStr(cleanTanggal);
+    }
+
+    const repeatFlag = repeat_until_ok === false || Number(repeat_until_ok) === 0 ? 0 : 1;
+    const rawInt = Number(interval_menit);
+    const interval = Number.isFinite(rawInt) ? Math.max(2, Math.min(180, Math.round(rawInt))) : 10;
+    const rawMax = Number(max_repeats);
+    const maxRep = Number.isFinite(rawMax) ? Math.max(1, Math.min(60, Math.round(rawMax))) : 20;
+    const aktifFlag = aktif === false || Number(aktif) === 0 ? 0 : 1;
+
+    const res = db
+      .prepare(
+        `INSERT INTO outbound_alarms
+          (target_nama, target_nomor, pesan, mode, hari, tanggal, jam, repeat_until_ok, interval_menit, max_repeats, aktif)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        cleanNama,
+        cleanNomor,
+        cleanPesan,
+        cleanMode,
+        cleanHari,
+        cleanTanggal,
+        cleanJam,
+        repeatFlag,
+        interval,
+        maxRep,
+        aktifFlag
+      );
+    return this.getById(res.lastInsertRowid);
+  },
+
+  update(id, fields = {}) {
+    const existing = this.getById(id);
+    if (!existing) return null;
+
+    const target_nomor =
+      fields.target_nomor !== undefined ? normalizeWaPhone(fields.target_nomor) : existing.target_nomor;
+    if (!target_nomor) throw new Error('Nomor tujuan tidak valid.');
+    const target_nama =
+      fields.target_nama !== undefined
+        ? String(fields.target_nama || target_nomor).trim()
+        : existing.target_nama;
+    const pesan = fields.pesan !== undefined ? String(fields.pesan || '').trim() : existing.pesan;
+    if (!pesan) throw new Error('Pesan alarm wajib diisi.');
+    const jam = fields.jam !== undefined ? normalizeJam(fields.jam) : existing.jam;
+    if (!jam) throw new Error('Format jam tidak valid (HH:MM).');
+
+    const mode = fields.mode !== undefined ? normalizeOutboundMode(fields.mode) : existing.mode;
+    let hari = fields.hari !== undefined ? fields.hari : existing.hari;
+    let tanggal = fields.tanggal !== undefined ? fields.tanggal : existing.tanggal;
+    if (mode === 'HARIAN') {
+      hari = 'Setiap Hari';
+      tanggal = null;
+    } else if (mode === 'MINGGUAN') {
+      const days = String(hari || '')
+        .split(/[,;\s]+/)
+        .map((d) => normalizeHari(d))
+        .filter(Boolean);
+      hari = days.length ? [...new Set(days)].join(', ') : getWibParts().hari;
+      tanggal = null;
+    } else {
+      tanggal = normalizeDateStr(tanggal) || getWibParts().dateStr;
+      hari = getHariFromDateStr(tanggal);
+    }
+
+    const repeat_until_ok =
+      fields.repeat_until_ok !== undefined
+        ? fields.repeat_until_ok === false || Number(fields.repeat_until_ok) === 0
+          ? 0
+          : 1
+        : existing.repeat_until_ok;
+    const rawInt = fields.interval_menit !== undefined ? Number(fields.interval_menit) : Number(existing.interval_menit);
+    const interval_menit = Number.isFinite(rawInt) ? Math.max(2, Math.min(180, Math.round(rawInt))) : 10;
+    const rawMax = fields.max_repeats !== undefined ? Number(fields.max_repeats) : Number(existing.max_repeats);
+    const max_repeats = Number.isFinite(rawMax) ? Math.max(1, Math.min(60, Math.round(rawMax))) : 20;
+    const aktif =
+      fields.aktif !== undefined
+        ? fields.aktif === false || Number(fields.aktif) === 0
+          ? 0
+          : 1
+        : existing.aktif;
+
+    db.prepare(
+      `UPDATE outbound_alarms
+       SET target_nama = ?, target_nomor = ?, pesan = ?, mode = ?, hari = ?, tanggal = ?, jam = ?,
+           repeat_until_ok = ?, interval_menit = ?, max_repeats = ?, aktif = ?
+       WHERE id = ?`
+    ).run(
+      target_nama,
+      target_nomor,
+      pesan,
+      mode,
+      hari,
+      tanggal,
+      jam,
+      repeat_until_ok,
+      interval_menit,
+      max_repeats,
+      aktif,
+      Number(id)
+    );
+    return this.getById(id);
+  },
+
+  deactivate(id) {
+    db.prepare('UPDATE outbound_alarms SET aktif = 0 WHERE id = ?').run(Number(id));
+  },
+
+  remove(id) {
+    const res = db.prepare('DELETE FROM outbound_alarms WHERE id = ?').run(Number(id));
+    return res.changes > 0;
+  },
+
+  getDueAlarms(hari, tanggal, jam) {
+    const rows = db
+      .prepare('SELECT * FROM outbound_alarms WHERE aktif = 1 AND jam = ? ORDER BY id ASC')
+      .all(jam);
+    const targetDayLower = String(hari || '').toLowerCase();
+    return rows.filter((r) => {
+      if (r.mode === 'HARIAN') return true;
+      if (r.mode === 'MINGGUAN') {
+        const list = String(r.hari || '')
+          .split(/[,;]+/)
+          .map((d) => d.trim().toLowerCase());
+        return list.includes(targetDayLower);
+      }
+      return r.tanggal === tanggal;
+    });
+  },
+};
+
+export const outboundPendingRepo = {
+  listActive() {
+    return db
+      .prepare('SELECT * FROM outbound_pending WHERE acknowledged = 0 ORDER BY next_trigger_at ASC, id ASC')
+      .all();
+  },
+
+  listActiveByPhone(nomor) {
+    const clean = normalizeWaPhone(nomor);
+    if (!clean) return [];
+    return db
+      .prepare('SELECT * FROM outbound_pending WHERE acknowledged = 0 AND target_nomor = ? ORDER BY id ASC')
+      .all(clean);
+  },
+
+  getById(id) {
+    return db.prepare('SELECT * FROM outbound_pending WHERE id = ?').get(Number(id));
+  },
+
+  create({
+    alarm_id = null,
+    target_nama,
+    target_nomor,
+    pesan,
+    tanggal,
+    jam_awal,
+    interval_menit = 10,
+    max_repeats = 20,
+    next_trigger_at,
+  }) {
+    const cleanNomor = normalizeWaPhone(target_nomor);
+    const cleanPesan = String(pesan || '').trim();
+    const cleanTanggal = normalizeDateStr(tanggal) || getWibParts().dateStr;
+    const cleanJam = normalizeJam(jam_awal) || getWibParts().timeStr;
+    const cleanNext = normalizeDeadline(next_trigger_at);
+    const interval = Math.max(2, Math.min(180, Math.round(Number(interval_menit) || 10)));
+    const maxRep = Math.max(1, Math.min(60, Math.round(Number(max_repeats) || 20)));
+    if (!cleanNomor || !cleanPesan || !cleanNext) {
+      throw new Error('Data antrean alarm nomor lain tidak valid.');
+    }
+
+    if (alarm_id) {
+      const existing = db
+        .prepare('SELECT * FROM outbound_pending WHERE alarm_id = ? AND tanggal = ? AND acknowledged = 0')
+        .get(Number(alarm_id), cleanTanggal);
+      if (existing) return existing;
+    }
+
+    const res = db
+      .prepare(
+        `INSERT INTO outbound_pending
+          (alarm_id, target_nama, target_nomor, pesan, tanggal, jam_awal, interval_menit, max_repeats, next_trigger_at, repeat_count, acknowledged)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)`
+      )
+      .run(
+        alarm_id ? Number(alarm_id) : null,
+        String(target_nama || cleanNomor).trim(),
+        cleanNomor,
+        cleanPesan,
+        cleanTanggal,
+        cleanJam,
+        interval,
+        maxRep,
+        cleanNext
+      );
+    return this.getById(res.lastInsertRowid);
+  },
+
+  getDue(nowDateTimeStr) {
+    return db
+      .prepare('SELECT * FROM outbound_pending WHERE acknowledged = 0 AND next_trigger_at <= ? ORDER BY next_trigger_at ASC, id ASC')
+      .all(nowDateTimeStr);
+  },
+
+  bumpRepeat(id, nextTriggerAt, nextCount) {
+    const cleanNext = normalizeDeadline(nextTriggerAt);
+    if (!cleanNext) return null;
+    db.prepare('UPDATE outbound_pending SET next_trigger_at = ?, repeat_count = ? WHERE id = ?').run(
+      cleanNext,
+      Math.max(1, Number(nextCount) || 1),
+      Number(id)
+    );
+    return this.getById(id);
+  },
+
+  acknowledgeById(id, ackAt = getWibParts().dateTimeStr, ackBy = 'OWNER') {
+    const existing = this.getById(id);
+    if (!existing || existing.acknowledged) return null;
+    db.prepare('UPDATE outbound_pending SET acknowledged = 1, acknowledged_by = ?, acknowledged_at = ? WHERE id = ?').run(
+      String(ackBy || 'OWNER'),
+      String(ackAt || ''),
+      Number(id)
+    );
+    return this.getById(id);
+  },
+
+  acknowledgeByPhone(nomor, ackAt = getWibParts().dateTimeStr, ackBy = 'TARGET') {
+    const active = this.listActiveByPhone(nomor);
+    if (!active.length) return [];
+    const clean = normalizeWaPhone(nomor);
+    db.prepare(
+      'UPDATE outbound_pending SET acknowledged = 1, acknowledged_by = ?, acknowledged_at = ? WHERE acknowledged = 0 AND target_nomor = ?'
+    ).run(String(ackBy || 'TARGET'), String(ackAt || ''), clean);
+    return active;
+  },
+
+  acknowledgeAll(ackAt = getWibParts().dateTimeStr, ackBy = 'OWNER') {
+    const active = this.listActive();
+    if (!active.length) return [];
+    db.prepare(
+      'UPDATE outbound_pending SET acknowledged = 1, acknowledged_by = ?, acknowledged_at = ? WHERE acknowledged = 0'
+    ).run(String(ackBy || 'OWNER'), String(ackAt || ''));
+    return active;
   },
 };
 
