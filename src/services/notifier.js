@@ -1,5 +1,5 @@
 import * as webpush from 'web-push';
-import { pushRepo, stateRepo } from '../config/db.js';
+import { MACRODROID_RING_TAG, pushRepo, stateRepo } from '../config/db.js';
 import { getWibParts } from '../utils/time.js';
 
 let vapidConfigured = false;
@@ -118,7 +118,7 @@ export async function sendWebPushNotification(title, body, url = '/', tag = null
  * 2. Sends Web Push notification to all subscribed browsers / PWA Service Workers.
  */
 export async function sendDualNotification(title, body, url = '/', options = {}) {
-  const { recordForSnooze = true, activityName = null, tag = null } = options;
+  const { recordForSnooze = true, activityName = null, tag = null, ringLoud = false } = options;
 
   if (recordForSnooze) {
     setLastReminder({
@@ -128,10 +128,11 @@ export async function sendDualNotification(title, body, url = '/', options = {})
     });
   }
 
+  const waPrefix = ringLoud ? `${MACRODROID_RING_TAG}\n` : '';
   const waResult = { sent: false, error: null };
   if (typeof waSenderFn === 'function') {
     try {
-      await waSenderFn(`*${title}*\n${body}`);
+      await waSenderFn(`${waPrefix}*${title}*\n${body}`);
       waResult.sent = true;
     } catch (err) {
       waResult.error = err?.message || String(err);
@@ -141,10 +142,29 @@ export async function sendDualNotification(title, body, url = '/', options = {})
     waResult.error = 'WhatsApp sender not registered';
   }
 
-  const webPushResult = await sendWebPushNotification(title, body, url, tag);
+  const pushTitle = ringLoud ? `${MACRODROID_RING_TAG} ${title}` : title;
+  const webPushResult = await sendWebPushNotification(pushTitle, body, url, tag);
 
   return {
     whatsapp: waResult,
     webPush: webPushResult,
+    ringLoud: Boolean(ringLoud),
   };
+}
+
+/**
+ * Send a direct MacroDroid loud ring test alert ([ALARM-RING]).
+ */
+export async function sendRingTestNotification(label = 'Test Dering Keras HP (MacroDroid)') {
+  const parts = getWibParts();
+  return sendDualNotification(
+    `🔔 ${label}`,
+    `Sinyal pemicu dering keras dikirim pada *${parts.display}*.\nJika MacroDroid sudah aktif, HP akan berdering keras sekarang!`,
+    '/#jadwal',
+    {
+      recordForSnooze: false,
+      tag: `ring-test-${Date.now()}`,
+      ringLoud: true,
+    }
+  );
 }

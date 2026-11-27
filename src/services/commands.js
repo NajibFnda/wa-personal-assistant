@@ -8,6 +8,7 @@ import {
   focusRepo,
   habitRepo,
   inferIsPresensi,
+  inferRingLoud,
   jadwalRepo,
   memoriRepo,
   normalizeCategory,
@@ -36,7 +37,7 @@ import {
 import { checkBudgetThresholds } from './budget.js';
 import { emitDataChange } from './events.js';
 import { generateMonthlyPartnerRecap, generatePartnerRecommendation } from './gemini.js';
-import { getLastReminder } from './notifier.js';
+import { getLastReminder, sendRingTestNotification } from './notifier.js';
 
 function extensionFromMime(mimeType, fallbackFileName = '') {
   if (fallbackFileName && path.extname(fallbackFileName)) {
@@ -139,9 +140,10 @@ function buildHelpText() {
     '',
     '📅 *Jadwal, Presensi & Snooze*',
     '• `/j` — Lihat jadwal hari ini',
-    '• `/j <hari/YYYY-MM-DD> <HH:MM> <nama>`',
+    '• `/j <hari/YYYY-MM-DD> <HH:MM> <nama> [ring]`',
     '• `/ok` _(atau balas `ok`)_ — Hentikan pengingat presensi berulang (tiap 20m)',
     '• `/s <menit>` — Snooze pengingat terakhir',
+    '• `/ring [detik]` — Tes dering keras HP MacroDroid (`[ALARM-RING]`)',
     '',
     '📝 *Tugas & Deadline*',
     '• `/t` — Lihat semua tugas aktif',
@@ -548,20 +550,28 @@ export async function handleSlashCommand({
       }
 
       const isRutinFlag = asDate ? 0 : 1;
-      const isPresensi = inferIsPresensi({ nama, is_rutin: isRutinFlag });
+      const ringFlag = inferRingLoud(nama) === true;
+      const cleanNama = nama
+        .replace(/(?:pakai|pake|dengan)\s+(?:ring|dering(?:\s+keras)?|alarm\s+keras)\b/gi, ' ')
+        .replace(/\b(?:ring|dering(?:\s+keras)?)\s*$/i, '')
+        .replace(/\s+/g, ' ')
+        .trim() || nama;
+      const isPresensi = inferIsPresensi({ nama: cleanNama, is_rutin: isRutinFlag });
       const rec = jadwalRepo.create({
-        nama,
+        nama: cleanNama,
         hari: asHari || getHariFromDateStr(asDate),
         tanggal: asDate || null,
         jam,
         is_rutin: isRutinFlag,
         aktif: 1,
         repeat_until_ok: isPresensi ? 1 : 0,
+        ring_loud: ringFlag ? 1 : 0,
       });
       emitDataChange('jadwal', 'whatsapp');
+      const ringNote = rec.ring_loud ? ' • Dering Keras [RING]' : '';
       const modeText = rec.repeat_until_ok
-        ? `Presensi • ulang tiap ${Number(rec.repeat_interval_min) || 20}m sampai balas "ok"`
-        : 'Alarm Biasa • 1x pengingat';
+        ? `Presensi • ulang tiap ${Number(rec.repeat_interval_min) || 20}m sampai balas "ok"${ringNote}`
+        : `Alarm Biasa • 1x pengingat${ringNote}`;
       return {
         text: rec.is_rutin
           ? `📅 *Jadwal Rutin Tersimpan:*\n• *${rec.nama}*\n• Setiap ${rec.hari} pukul ${rec.jam} WIB\n• Mode: _${modeText}_`
@@ -791,15 +801,22 @@ export async function handleSlashCommand({
       const qty = Number(rMatch[1]);
       const unit = (rMatch[2] || 'm').toLowerCase();
       const mins = unit.startsWith('j') ? qty * 60 : qty;
-      const pesan = rMatch[3].trim();
+      const rawPesan = rMatch[3].trim();
+      const ringFlag = inferRingLoud(rawPesan) === true;
+      const pesan = rawPesan
+        .replace(/(?:pakai|pake|dengan)\s+(?:ring|dering(?:\s+keras)?|alarm\s+keras)\b/gi, ' ')
+        .replace(/\b(?:ring|dering(?:\s+keras)?)\s*$/i, '')
+        .replace(/\s+/g, ' ')
+        .trim() || rawPesan;
       if (mins < 1 || mins > 1440) {
         return { text: 'Durasi pengingat cepat harus antara 1 menit sampai 24 jam.' };
       }
       const target = addMinutesWib(mins, now);
-      const saved = reminderRepo.create({ pesan, trigger_at: target.dateTimeStr });
+      const saved = reminderRepo.create({ pesan, trigger_at: target.dateTimeStr, ring_loud: ringFlag ? 1 : 0 });
       emitDataChange('reminder', 'whatsapp');
+      const modeLine = saved.ring_loud ? '\n• Mode: _Dering Keras [RING] (MacroDroid)_' : '';
       return {
-        text: `⏰ *Pengingat Cepat Dipasang!*\n• Pesan: *${saved.pesan}*\n• Akan berbunyi: *${target.timeStr} WIB* (${target.dateStr}, ${mins} menit lagi)`,
+        text: `⏰ *Pengingat Cepat Dipasang!*\n• Pesan: *${saved.pesan}*\n• Akan berbunyi: *${target.timeStr} WIB* (${target.dateStr}, ${mins} menit lagi)${modeLine}`,
       };
     }
 
@@ -992,6 +1009,21 @@ export async function handleSlashCommand({
       return {
         text: `🛡️ *Log Keamanan Web Dashboard*\nTotal: ${stats.total} | Berhasil: ${stats.successCount} | PIN Salah: ${stats.failedCount} | IP Unik: ${stats.uniqueIps}\n\n${lines.join('\n\n')}`,
       };
+    }
+
+    case 'ring': {
+      const delaySec = args ? Math.max(0, Math.min(60, Math.round(Number(args) || 0))) : 0;
+      if (delaySec > 0) {
+        const timer = setTimeout(() => {
+          sendRingTestNotification('Test Dering Keras HP (MacroDroid)').catch(() => {});
+        }, delaySec * 1000);
+        timer.unref?.();
+        return {
+          text: `🔔 Siap! Sinyal dering keras akan dikirim dalam *${delaySec} detik*.\nSilakan kunci layar HP sekarang untuk menguji MacroDroid.`,
+        };
+      }
+      await sendRingTestNotification('Test Dering Keras HP (MacroDroid)');
+      return { skipReply: true };
     }
 
     case 'briefing': {

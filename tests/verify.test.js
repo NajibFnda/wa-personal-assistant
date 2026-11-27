@@ -1025,4 +1025,103 @@ describe('All-in-One Personal Assistant End-to-End Verification (Isolated Test D
     });
     assert.equal(routinePersonalAlarm.repeat_until_ok, 0);
   });
+
+  it('11. MacroDroid Loud Ring ([ALARM-RING]) per-alarm AI detection, /ring command & global settings', async () => {
+    const { jadwalRepo, reminderRepo, settingsRepo } = await import('../src/config/db.js');
+    const { tryLocalFastIntent } = await import('../src/services/gemini.js');
+    const { handleSlashCommand } = await import('../src/services/commands.js');
+    const { checkSchedules, checkQuickReminders } = await import('../src/services/scheduler.js');
+
+    const morning = new Date('2026-11-28T09:00:00+07:00'); // Sabtu 09:00
+
+    // 1. "ingatkan aku jam 2 siang pakai ring" -> 14:00 today, normal alarm (repeat=0), ring_loud=1
+    const ringIntent = tryLocalFastIntent({
+      text: 'ingatkan aku jam 2 siang pakai ring',
+      hasMedia: false,
+      now: morning,
+    });
+    assert.equal(ringIntent?.intent, 'TAMBAH_JADWAL');
+    assert.equal(ringIntent?.payload?.jam, '14:00');
+    assert.equal(ringIntent?.payload?.tanggal, '2026-11-28');
+    assert.equal(ringIntent?.payload?.is_presensi, false);
+    assert.equal(ringIntent?.payload?.ring_loud, true);
+
+    const ringExec = await executeIntent({
+      result: ringIntent,
+      rawText: 'ingatkan aku jam 2 siang pakai ring',
+      now: morning,
+    });
+    assert.match(ringExec.text, /Dering Keras \[RING\]/);
+
+    // Fire at 14:00 -> MUST include [ALARM-RING] at top of WA message
+    const beforeFire = sentWaMessages.length;
+    await checkSchedules(new Date('2026-11-28T14:00:00+07:00'));
+    assert.equal(sentWaMessages.length, beforeFire + 1);
+    assert.ok(sentWaMessages[sentWaMessages.length - 1].startsWith('[ALARM-RING]\n'));
+
+    // 2. Normal alarm WITHOUT ring ("ingatkan aku jam 3 siang baca jurnal") -> ring_loud=0 -> NO [ALARM-RING]
+    const silentIntent = tryLocalFastIntent({
+      text: 'ingatkan aku jam 3 siang baca jurnal',
+      hasMedia: false,
+      now: morning,
+    });
+    assert.equal(silentIntent?.intent, 'TAMBAH_JADWAL');
+    assert.equal(silentIntent?.payload?.jam, '15:00');
+    assert.equal(silentIntent?.payload?.ring_loud, false);
+    await executeIntent({ result: silentIntent, rawText: 'ingatkan aku jam 3 siang baca jurnal', now: morning });
+    await checkSchedules(new Date('2026-11-28T15:00:00+07:00'));
+    assert.doesNotMatch(sentWaMessages[sentWaMessages.length - 1], /\[ALARM-RING\]/);
+
+    // 3. Quick reminder with ring ("ingetin 30 menit lagi matiin kompor pakai ring" + "/r 10m cek oven ring")
+    const qRemIntent = tryLocalFastIntent({
+      text: 'ingetin 30 menit lagi matiin kompor pakai ring',
+      hasMedia: false,
+      now: morning,
+    });
+    assert.equal(qRemIntent?.intent, 'TAMBAH_REMINDER');
+    assert.equal(qRemIntent?.payload?.ring_loud, true);
+    assert.equal(qRemIntent?.payload?.judul, 'matiin kompor');
+
+    const rSlash = await handleSlashCommand({ text: '/r 10m cek oven ring', now: morning });
+    assert.match(rSlash.text, /Dering Keras \[RING\]/);
+    const remRow = reminderRepo.list({ selesai: 0 }).find((r) => r.pesan === 'cek oven');
+    assert.ok(remRow && remRow.ring_loud === 1);
+
+    await checkQuickReminders(new Date('2026-11-28T09:11:00+07:00'));
+    assert.ok(sentWaMessages[sentWaMessages.length - 1].startsWith('[ALARM-RING]\n'));
+
+    // 4. /ring immediate & /ring 5 delayed + POST /api/actions/test-ring
+    const beforeTestRing = sentWaMessages.length;
+    const ringCmdNow = await handleSlashCommand({ text: '/ring', now: morning });
+    assert.equal(ringCmdNow?.skipReply, true);
+    assert.equal(sentWaMessages.length, beforeTestRing + 1);
+    assert.ok(sentWaMessages[sentWaMessages.length - 1].startsWith('[ALARM-RING]\n'));
+
+    const ringCmdDelay = await handleSlashCommand({ text: '/ring 5', now: morning });
+    assert.match(ringCmdDelay.text, /5 detik/);
+
+    const apiRing = await fetch(`${baseUrl}/api/actions/test-ring`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ delaySeconds: 0 }),
+    });
+    assert.equal(apiRing.status, 200);
+    const apiRingJson = await apiRing.json();
+    assert.equal(apiRingJson.ok, true);
+    assert.equal(apiRingJson.result?.ringLoud, true);
+
+    // 5. Global settings toggle persists cleanly via API
+    const putSet = await fetch(`${baseUrl}/api/settings/notifications`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ringOnNormalAlarm: true }),
+    });
+    assert.equal(putSet.status, 200);
+    assert.equal(settingsRepo.getNotificationSettings().ringOnNormalAlarm, true);
+    settingsRepo.updateNotificationSettings({ ringOnNormalAlarm: false });
+
+    // Confirm jadwalRepo stores ring_loud=1 when created directly
+    const jDirect = jadwalRepo.create({ nama: 'Telpon Bangun', tanggal: '2026-11-29', jam: '05:00', is_rutin: 0, ring_loud: 1 });
+    assert.equal(jDirect.ring_loud, 1);
+  });
 });

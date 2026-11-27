@@ -203,6 +203,9 @@ function ensureColumn(table, column, definition) {
 
 ensureColumn('jadwal', 'repeat_until_ok', 'INTEGER DEFAULT 1');
 ensureColumn('jadwal', 'repeat_interval_min', 'INTEGER DEFAULT 20');
+ensureColumn('jadwal', 'ring_loud', 'INTEGER DEFAULT 0');
+ensureColumn('quick_reminders', 'ring_loud', 'INTEGER DEFAULT 0');
+ensureColumn('presensi_pending', 'ring_loud', 'INTEGER DEFAULT 0');
 ensureColumn('memori_pacar', 'deskripsi', "TEXT DEFAULT ''");
 ensureColumn('momen_wishlist', 'notif_days', "TEXT DEFAULT ''");
 ensureColumn('momen_wishlist', 'notif_jam', "TEXT DEFAULT ''");
@@ -216,6 +219,20 @@ export function normalizeRecurrence(input) {
   return 'TAHUNAN';
 }
 
+export const MACRODROID_RING_TAG = '[ALARM-RING]';
+
+export function inferRingLoud(text = '') {
+  const str = String(text || '').trim();
+  if (!str) return null;
+  if (/\b(tanpa\s+(?:ring|dering|telpon|telepon)|jangan\s+(?:ring|dering|telpon|telepon|bunyi\s+keras)|no\s+ring|mode\s+silent|bisu)\b/i.test(str)) {
+    return false;
+  }
+  if (/\b(ring|dering(?:\s+keras)?|telpon|telepon|call|panggil|alarm\s+keras|bunyi\s+keras|bangunin)\b/i.test(str)) {
+    return true;
+  }
+  return null;
+}
+
 export const DEFAULT_NOTIFICATION_SETTINGS = {
   momentDefaultDays: [7, 3, 1],
   momentDefaultTime: '08:00',
@@ -226,6 +243,11 @@ export const DEFAULT_NOTIFICATION_SETTINGS = {
   weeklyBackupEnabled: true,
   weeklyBackupDay: 0, // 0 = Minggu ... 6 = Sabtu
   weeklyBackupTime: '23:00',
+  ringEnabled: true,
+  ringOnPresensi: true,
+  ringOnNormalAlarm: false,
+  ringOnQuickReminder: false,
+  ringOnUrgentTask: true,
 };
 
 export function parseNotifDays(input, fallback = []) {
@@ -385,6 +407,27 @@ export const settingsRepo = {
           ? backupDay
           : DEFAULT_NOTIFICATION_SETTINGS.weeklyBackupDay,
       weeklyBackupTime,
+      ringTag: MACRODROID_RING_TAG,
+      ringEnabled:
+        saved.ringEnabled !== undefined
+          ? Boolean(saved.ringEnabled)
+          : DEFAULT_NOTIFICATION_SETTINGS.ringEnabled,
+      ringOnPresensi:
+        saved.ringOnPresensi !== undefined
+          ? Boolean(saved.ringOnPresensi)
+          : DEFAULT_NOTIFICATION_SETTINGS.ringOnPresensi,
+      ringOnNormalAlarm:
+        saved.ringOnNormalAlarm !== undefined
+          ? Boolean(saved.ringOnNormalAlarm)
+          : DEFAULT_NOTIFICATION_SETTINGS.ringOnNormalAlarm,
+      ringOnQuickReminder:
+        saved.ringOnQuickReminder !== undefined
+          ? Boolean(saved.ringOnQuickReminder)
+          : DEFAULT_NOTIFICATION_SETTINGS.ringOnQuickReminder,
+      ringOnUrgentTask:
+        saved.ringOnUrgentTask !== undefined
+          ? Boolean(saved.ringOnUrgentTask)
+          : DEFAULT_NOTIFICATION_SETTINGS.ringOnUrgentTask,
     };
   },
 
@@ -443,6 +486,21 @@ export const settingsRepo = {
       const jam = normalizeJam(patch.weeklyBackupTime);
       if (!jam) throw new Error('Format jam auto-backup tidak valid (HH:MM).');
       next.weeklyBackupTime = jam;
+    }
+    if (patch.ringEnabled !== undefined) {
+      next.ringEnabled = Boolean(patch.ringEnabled);
+    }
+    if (patch.ringOnPresensi !== undefined) {
+      next.ringOnPresensi = Boolean(patch.ringOnPresensi);
+    }
+    if (patch.ringOnNormalAlarm !== undefined) {
+      next.ringOnNormalAlarm = Boolean(patch.ringOnNormalAlarm);
+    }
+    if (patch.ringOnQuickReminder !== undefined) {
+      next.ringOnQuickReminder = Boolean(patch.ringOnQuickReminder);
+    }
+    if (patch.ringOnUrgentTask !== undefined) {
+      next.ringOnUrgentTask = Boolean(patch.ringOnUrgentTask);
     }
 
     stateRepo.setJson('notification_settings', next);
@@ -522,6 +580,7 @@ export const jadwalRepo = {
     aktif = 1,
     repeat_until_ok,
     repeat_interval_min = 20,
+    ring_loud = 0,
   }) {
     const cleanNama = String(nama || '').trim();
     const cleanJam = normalizeJam(jam);
@@ -554,12 +613,13 @@ export const jadwalRepo = {
           : 1;
     const rawInterval = Number(repeat_interval_min);
     const intervalMin = Number.isFinite(rawInterval) && rawInterval >= 1 && rawInterval <= 180 ? Math.round(rawInterval) : 20;
+    const ringFlag = ring_loud === true || Number(ring_loud) === 1 ? 1 : 0;
 
     const result = db
       .prepare(
-        'INSERT INTO jadwal (nama, hari, tanggal, jam, is_rutin, aktif, repeat_until_ok, repeat_interval_min) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO jadwal (nama, hari, tanggal, jam, is_rutin, aktif, repeat_until_ok, repeat_interval_min, ring_loud) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
-      .run(cleanNama, cleanHari, cleanTanggal, cleanJam, rutinFlag, aktifFlag, repeatFlag, intervalMin);
+      .run(cleanNama, cleanHari, cleanTanggal, cleanJam, rutinFlag, aktifFlag, repeatFlag, intervalMin, ringFlag);
     return this.getById(result.lastInsertRowid);
   },
 
@@ -598,6 +658,15 @@ export const jadwalRepo = {
     const rawInt = fields.repeat_interval_min !== undefined ? Number(fields.repeat_interval_min) : Number(existing.repeat_interval_min);
     const repeat_interval_min = Number.isFinite(rawInt) && rawInt >= 1 && rawInt <= 180 ? Math.round(rawInt) : 20;
 
+    const ring_loud =
+      fields.ring_loud !== undefined
+        ? fields.ring_loud === true || Number(fields.ring_loud) === 1
+          ? 1
+          : 0
+        : Number(existing.ring_loud) === 1
+          ? 1
+          : 0;
+
     let hari = fields.hari !== undefined ? normalizeHari(fields.hari) : existing.hari;
     let tanggal = fields.tanggal !== undefined ? normalizeDateStr(fields.tanggal) : existing.tanggal;
 
@@ -610,8 +679,8 @@ export const jadwalRepo = {
     }
 
     db.prepare(
-      'UPDATE jadwal SET nama = ?, hari = ?, tanggal = ?, jam = ?, is_rutin = ?, aktif = ?, repeat_until_ok = ?, repeat_interval_min = ? WHERE id = ?'
-    ).run(nama, hari, tanggal, jam, is_rutin, aktif, repeat_until_ok, repeat_interval_min, Number(id));
+      'UPDATE jadwal SET nama = ?, hari = ?, tanggal = ?, jam = ?, is_rutin = ?, aktif = ?, repeat_until_ok = ?, repeat_interval_min = ?, ring_loud = ? WHERE id = ?'
+    ).run(nama, hari, tanggal, jam, is_rutin, aktif, repeat_until_ok, repeat_interval_min, ring_loud, Number(id));
     return this.getById(id);
   },
 
@@ -664,12 +733,13 @@ export const presensiPendingRepo = {
     return db.prepare('SELECT * FROM presensi_pending WHERE id = ?').get(Number(id));
   },
 
-  create({ jadwal_id = null, nama, tanggal, jam_awal, interval_menit = 20, next_trigger_at }) {
+  create({ jadwal_id = null, nama, tanggal, jam_awal, interval_menit = 20, next_trigger_at, ring_loud = 0 }) {
     const cleanNama = String(nama || '').trim();
     const cleanTanggal = normalizeDateStr(tanggal) || getWibParts().dateStr;
     const cleanJam = normalizeJam(jam_awal) || getWibParts().timeStr;
     const cleanNext = normalizeDeadline(next_trigger_at);
     const interval = Math.max(1, Math.min(180, Math.round(Number(interval_menit) || 20)));
+    const ringFlag = ring_loud === true || Number(ring_loud) === 1 ? 1 : 0;
     if (!cleanNama || !cleanNext) throw new Error('Data pengingat presensi berulang tidak valid.');
 
     // Prevent duplicate active pending loop for the same schedule on the same day
@@ -682,10 +752,10 @@ export const presensiPendingRepo = {
 
     const res = db
       .prepare(
-        `INSERT INTO presensi_pending (jadwal_id, nama, tanggal, jam_awal, interval_menit, next_trigger_at, repeat_count, acknowledged)
-         VALUES (?, ?, ?, ?, ?, ?, 1, 0)`
+        `INSERT INTO presensi_pending (jadwal_id, nama, tanggal, jam_awal, interval_menit, next_trigger_at, repeat_count, acknowledged, ring_loud)
+         VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?)`
       )
-      .run(jadwal_id ? Number(jadwal_id) : null, cleanNama, cleanTanggal, cleanJam, interval, cleanNext);
+      .run(jadwal_id ? Number(jadwal_id) : null, cleanNama, cleanTanggal, cleanJam, interval, cleanNext, ringFlag);
     return this.getById(res.lastInsertRowid);
   },
 
@@ -1446,14 +1516,15 @@ export const reminderRepo = {
     return db.prepare('SELECT * FROM quick_reminders WHERE id = ?').get(Number(id));
   },
 
-  create({ pesan, trigger_at }) {
+  create({ pesan, trigger_at, ring_loud = 0 }) {
     const cleanPesan = String(pesan || '').trim();
     const cleanTrigger = normalizeDeadline(trigger_at);
     if (!cleanPesan) throw new Error('Pesan pengingat wajib diisi.');
     if (!cleanTrigger) throw new Error('Waktu pengingat tidak valid.');
+    const ringFlag = ring_loud === true || Number(ring_loud) === 1 ? 1 : 0;
     const res = db
-      .prepare('INSERT INTO quick_reminders (pesan, trigger_at, selesai) VALUES (?, ?, 0)')
-      .run(cleanPesan, cleanTrigger);
+      .prepare('INSERT INTO quick_reminders (pesan, trigger_at, selesai, ring_loud) VALUES (?, ?, 0, ?)')
+      .run(cleanPesan, cleanTrigger, ringFlag);
     return this.getById(res.lastInsertRowid);
   },
 

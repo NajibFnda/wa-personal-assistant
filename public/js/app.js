@@ -912,8 +912,8 @@ function renderJadwal() {
         <strong>${escapeHtml(j.nama)}</strong>
         ${
           Number(j.repeat_until_ok) === 1 && !/\(Snooze\)/i.test(j.nama || '')
-            ? `<div class="text-xs muted" style="margin-top:3px;">Presensi • Ulang tiap ${Number(j.repeat_interval_min) || 20}m sampai balas OK</div>`
-            : `<div class="text-xs muted" style="margin-top:3px;">Alarm Biasa • 1x pengingat</div>`
+            ? `<div class="text-xs muted" style="margin-top:3px;">Presensi • Ulang tiap ${Number(j.repeat_interval_min) || 20}m sampai balas OK${Number(j.ring_loud) === 1 ? ' • Dering Keras' : ''}</div>`
+            : `<div class="text-xs muted" style="margin-top:3px;">Alarm Biasa • 1x pengingat${Number(j.ring_loud) === 1 ? ' • Dering Keras' : ''}</div>`
         }
       </td>
       <td><span class="pill ${j.is_rutin ? 'pill-blue' : 'pill-cyan'}">${j.is_rutin ? 'Rutin' : 'Sekali Jalan'}</span></td>
@@ -968,6 +968,7 @@ function renderJadwal() {
       $('#jadwal-jam').value = item.jam;
       if ($('#jadwal-repeat-ok')) $('#jadwal-repeat-ok').checked = Number(item.repeat_until_ok) === 1;
       if ($('#jadwal-repeat-interval')) $('#jadwal-repeat-interval').value = Number(item.repeat_interval_min) || 20;
+      if ($('#jadwal-ring-loud')) $('#jadwal-ring-loud').checked = Number(item.ring_loud) === 1;
       toggleJadwalFields(false);
       openModal('modal-jadwal');
     });
@@ -1407,6 +1408,11 @@ async function openNotifSettingsModal() {
     $('#settings-backup-enabled').checked = Boolean(s.weeklyBackupEnabled);
     $('#settings-backup-day').value = String(s.weeklyBackupDay ?? 0);
     $('#settings-backup-time').value = s.weeklyBackupTime || '23:00';
+    if ($('#settings-ring-enabled')) $('#settings-ring-enabled').checked = s.ringEnabled !== false;
+    if ($('#settings-ring-presensi')) $('#settings-ring-presensi').checked = s.ringOnPresensi !== false;
+    if ($('#settings-ring-normal')) $('#settings-ring-normal').checked = Boolean(s.ringOnNormalAlarm);
+    if ($('#settings-ring-reminder')) $('#settings-ring-reminder').checked = Boolean(s.ringOnQuickReminder);
+    if ($('#settings-ring-task')) $('#settings-ring-task').checked = s.ringOnUrgentTask !== false;
     openModal('modal-notif-settings');
   } catch (err) {
     toast(err.message, 'error');
@@ -2285,7 +2291,7 @@ function renderReminders(list) {
       (r) => `
       <div class="mini-item">
         <div>
-          <div class="fw-600 text-sm">${escapeHtml(r.pesan)}</div>
+          <div class="fw-600 text-sm">${escapeHtml(r.pesan)}${Number(r.ring_loud) === 1 ? ' <span class="pill pill-amber" style="margin-left:4px;">Dering Keras</span>' : ''}</div>
           <div class="text-xs muted mono">${escapeHtml(r.trigger_at)} WIB</div>
         </div>
         <button class="icon-btn danger" type="button" data-del-rem="${r.id}" title="Hapus Pengingat" aria-label="Hapus Pengingat">
@@ -2978,6 +2984,7 @@ function bindFormsAndActions() {
     $('#jadwal-tanggal').value = getTodayWibStr();
     if ($('#jadwal-repeat-ok')) $('#jadwal-repeat-ok').checked = true;
     if ($('#jadwal-repeat-interval')) $('#jadwal-repeat-interval').value = 20;
+    if ($('#jadwal-ring-loud')) $('#jadwal-ring-loud').checked = false;
     toggleJadwalFields(false);
     openModal('modal-jadwal');
   });
@@ -2994,6 +3001,7 @@ function bindFormsAndActions() {
       jam: $('#jadwal-jam').value,
       repeat_until_ok: $('#jadwal-repeat-ok')?.checked ? 1 : 0,
       repeat_interval_min: Number($('#jadwal-repeat-interval')?.value) || 20,
+      ring_loud: $('#jadwal-ring-loud')?.checked ? 1 : 0,
     };
     try {
       if (id) {
@@ -3165,6 +3173,11 @@ function bindFormsAndActions() {
       weeklyBackupEnabled: $('#settings-backup-enabled').checked,
       weeklyBackupDay: Number($('#settings-backup-day').value),
       weeklyBackupTime: $('#settings-backup-time').value,
+      ringEnabled: $('#settings-ring-enabled')?.checked ?? true,
+      ringOnPresensi: $('#settings-ring-presensi')?.checked ?? true,
+      ringOnNormalAlarm: $('#settings-ring-normal')?.checked ?? false,
+      ringOnQuickReminder: $('#settings-ring-reminder')?.checked ?? false,
+      ringOnUrgentTask: $('#settings-ring-task')?.checked ?? true,
     };
     try {
       await api('/api/settings/notifications', {
@@ -3175,6 +3188,27 @@ function bindFormsAndActions() {
       closeModal('modal-notif-settings');
       loadStatus();
       loadWishlist();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+
+  $('#btn-copy-ring-tag')?.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText('[ALARM-RING]');
+      toast('Tag [ALARM-RING] disalin. Tempel di filter teks MacroDroid.', 'success');
+    } catch {
+      toast('Gagal menyalin otomatis. Salin manual: [ALARM-RING]', 'info');
+    }
+  });
+
+  $('#btn-test-ring-hp')?.addEventListener('click', async () => {
+    try {
+      await api('/api/actions/test-ring', {
+        method: 'POST',
+        body: JSON.stringify({ delaySeconds: 5 }),
+      });
+      toast('Sinyal [ALARM-RING] akan dikirim dalam 5 detik. Kunci layar HP untuk uji MacroDroid.', 'success');
     } catch (err) {
       toast(err.message, 'error');
     }

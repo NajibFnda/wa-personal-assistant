@@ -16,6 +16,7 @@ import {
   focusRepo,
   habitRepo,
   inferIsPresensi,
+  inferRingLoud,
   jadwalRepo,
   memoriRepo,
   pengeluaranRepo,
@@ -399,6 +400,7 @@ export async function executeIntent({
                 jam: payload.jam,
                 is_rutin: payload.is_rutin,
                 is_presensi: payload.is_presensi,
+                ring_loud: payload.ring_loud,
               },
             ];
 
@@ -409,6 +411,7 @@ export async function executeIntent({
       const fallbackHariMatch = rawStr.match(/\b(senin|selasa|rabu|kamis|jum'?at|sabtu|minggu|ahad)\b/i);
       const fallbackIsRutin = /\b(tiap|setiap|rutin)\b/i.test(rawStr);
       const explicitNoPresensi = /\b(alarm\s+biasa|bukan\s+presensi|tanpa\s+ulang|jangan\s+ulang|sekali\s+saja)\b/i.test(rawStr);
+      const inferredRingFromRaw = inferRingLoud(rawStr);
 
       for (const item of items) {
         const cleanJam = normalizeJam(item.jam) || (fallbackJamMatch ? normalizeJam(fallbackJamMatch[1]) : null);
@@ -434,6 +437,13 @@ export async function executeIntent({
           isPresensi = inferIsPresensi({ nama: itemNama, is_rutin: isRutin, rawText: rawStr });
         }
 
+        const ringLoud =
+          inferredRingFromRaw !== null
+            ? inferredRingFromRaw
+            : typeof item.ring_loud === 'boolean'
+              ? item.ring_loud
+              : Boolean(payload.ring_loud);
+
         const rec = jadwalRepo.create({
           nama: itemNama,
           hari: resolvedHari,
@@ -442,6 +452,7 @@ export async function executeIntent({
           is_rutin: isRutin ? 1 : 0,
           aktif: 1,
           repeat_until_ok: isPresensi ? 1 : 0,
+          ring_loud: ringLoud ? 1 : 0,
         });
         created.push(rec);
       }
@@ -454,9 +465,10 @@ export async function executeIntent({
 
       const summary = created
         .map((j) => {
+          const ringTagNote = Number(j.ring_loud) === 1 ? ' • Dering Keras [RING]' : '';
           const modeNote = j.repeat_until_ok
-            ? ` _(Presensi • ulang tiap ${Number(j.repeat_interval_min) || 20}m sampai balas "ok")_`
-            : ' _(Alarm Biasa • 1x pengingat)_';
+            ? ` _(Presensi • ulang tiap ${Number(j.repeat_interval_min) || 20}m sampai balas "ok"${ringTagNote})_`
+            : ` _(Alarm Biasa • 1x pengingat${ringTagNote})_`;
           return j.is_rutin
             ? `• *${j.nama}* — Rutin tiap ${j.hari} pukul ${j.jam} WIB${modeNote}`
             : `• *${j.nama}* — ${j.hari}, ${j.tanggal} pukul ${j.jam} WIB${modeNote}`;
@@ -1018,11 +1030,14 @@ export async function executeIntent({
     case 'TAMBAH_REMINDER': {
       const menit = Math.max(1, Math.min(1440, Math.round(Number(payload.menit_tunda) || 15)));
       const pesan = String(payload.judul || payload.isi_catatan || rawText || 'Pengingat').trim();
+      const inferredRing = inferRingLoud(rawText);
+      const ringLoud = inferredRing !== null ? inferredRing : Boolean(payload.ring_loud);
       const target = addMinutesWib(menit, now);
-      const saved = reminderRepo.create({ pesan, trigger_at: target.dateTimeStr });
+      const saved = reminderRepo.create({ pesan, trigger_at: target.dateTimeStr, ring_loud: ringLoud ? 1 : 0 });
       emitDataChange('reminder', 'whatsapp');
+      const modeLine = saved.ring_loud ? '\n• Mode: _Dering Keras [RING] (MacroDroid)_' : '';
       return {
-        text: `⏰ *Pengingat Cepat Dipasang!*\n• Pesan: *${saved.pesan}*\n• Akan berbunyi: *${target.timeStr} WIB* (${target.dateStr}, ${menit} menit lagi)`,
+        text: `⏰ *Pengingat Cepat Dipasang!*\n• Pesan: *${saved.pesan}*\n• Akan berbunyi: *${target.timeStr} WIB* (${target.dateStr}, ${menit} menit lagi)${modeLine}`,
       };
     }
 

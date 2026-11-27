@@ -1,5 +1,5 @@
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
-import { aiLogRepo, inferIsPresensi, normalizeCategory, normalizeIncomeCategory } from '../config/db.js';
+import { aiLogRepo, inferIsPresensi, inferRingLoud, normalizeCategory, normalizeIncomeCategory } from '../config/db.js';
 import {
   HARI_ID,
   getWibParts,
@@ -436,23 +436,30 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
     };
   }
 
-  // 4B. Quick Reminder ("ingetin 30 menit lagi angkat jemuran", "ingatkan 2 jam lagi bayar kos")
+  // 4B. Quick Reminder ("ingetin 30 menit lagi angkat jemuran", "ingatkan 2 jam lagi bayar kos pakai ring")
   const quickRemMatch = clean.match(
-    /^(?:tolong\s+)?(?:ingetin|ingatkan|remind(?:\s+me)?)\s+(?:aku\s+)?(?:dalam\s+)?(\d{1,3})\s*(menit|mnt|m|jam|j)\s*(?:lagi\s+)?(?:untuk\s+|buat\s+)?(.+)$/i
+    /^(?:tolong\s+)?(?:ingetin|ingatkan|remind(?:\s+me)?|telpon|telepon|call|bangunin)\s+(?:aku\s+|saya\s+)?(?:dalam\s+)?(\d{1,3})\s*(menit|mnt|m|jam|j)\s*(?:lagi\s+)?(?:untuk\s+|buat\s+)?(.+)$/i
   );
   if (quickRemMatch) {
     const qty = Number(quickRemMatch[1]);
     const unit = quickRemMatch[2].toLowerCase();
     const menit = unit.startsWith('j') ? qty * 60 : qty;
-    const pesan = quickRemMatch[3].trim();
+    const ringFlag = inferRingLoud(clean) === true;
+    const pesan = quickRemMatch[3]
+      .replace(/(?:pakai|pake|dengan)\s+(?:ring|dering(?:\s+keras)?|alarm\s+keras|bunyi\s+keras|telpon|telepon|call)\b/gi, ' ')
+      .replace(/\b(?:tanpa\s+(?:ring|dering|telpon|telepon)|no\s+ring)\b/gi, ' ')
+      .replace(/\b(?:ring|dering(?:\s+keras)?)\s*$/i, '')
+      .replace(/\s+/g, ' ')
+      .trim() || 'Pengingat Cepat';
     if (menit >= 1 && menit <= 1440 && pesan) {
       return {
         intent: 'TAMBAH_REMINDER',
-        reply_message: 'Siap, pengingat cepat dipasang!',
+        reply_message: ringFlag ? 'Siap, pengingat cepat dengan dering keras dipasang!' : 'Siap, pengingat cepat dipasang!',
         payload: {
           menit_tunda: menit,
           judul: pesan,
           isi_catatan: pesan,
+          ring_loud: ringFlag,
         },
       };
     }
@@ -645,49 +652,87 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
     }
   }
 
-  // 6C. Natural Indonesian Add Schedule / Alarm ("Ingetin presensi tiap Selasa jam 07.50 matkul Sistem Terdistribusi" or "Pasang alarm besok jam 14:00 Mulai Percobaan Unet")
+  // 6C. Natural Indonesian Add Schedule / Alarm ("Ingetin presensi tiap Selasa jam 07.50 matkul Sistem Terdistribusi", "Ingatkan aku jam 2 siang pakai ring", "Telpon aku besok jam 5 pagi bangun tidur")
   if (
-    /\b(ingetin|ingatkan|jadwal|presensi|absen|alarm)\b/i.test(clean) &&
-    !/\b(tunda|snooze|menit\s+lagi)\b/i.test(clean)
+    /\b(ingetin|ingatkan|jadwal|presensi|absen|alarm|telpon|telepon|bangunin)\b/i.test(clean) &&
+    !/\b(tunda|snooze|(?:menit|mnt|jam)\s+lagi)\b/i.test(clean)
   ) {
-    const jamMatch = clean.match(/\b(?:jam|pukul|pkl)\s*(\d{1,2}[:.]\d{2})\b/i);
+    const clockMatch = clean.match(
+      /\b(?:jam|pukul|pkl)\s*(\d{1,2})(?:[:.](\d{2}))?(?:\s*(pagi|siang|sore|malam|dini\s+hari))?\b/i
+    );
     const relDate = resolveRelativeIndonesianDate(clean, now);
-    if (jamMatch && relDate) {
-      const jam = normalizeJam(jamMatch[1]);
-      if (jam) {
-        const isRutin = /\b(tiap|setiap|rutin)\b/i.test(clean) && Boolean(relDate.hari);
+    if (clockMatch) {
+      let hour = Number(clockMatch[1]);
+      const min = clockMatch[2] !== undefined ? Number(clockMatch[2]) : 0;
+      const period = (clockMatch[3] || '').toLowerCase().trim();
+      const validClock = Number.isInteger(hour) && hour >= 0 && hour <= 23 && Number.isInteger(min) && min >= 0 && min <= 59;
+
+      if (validClock) {
+        if (period === 'siang') {
+          if (hour >= 1 && hour <= 5) hour += 12;
+        } else if (period === 'sore') {
+          if (hour >= 1 && hour <= 7) hour += 12;
+        } else if (period === 'malam') {
+          if (hour === 12) hour = 0;
+          else if (hour >= 1 && hour <= 11) hour += 12;
+        } else if (period === 'pagi' || period === 'dini hari') {
+          if (hour === 12) hour = 0;
+        } else if (clockMatch[2] === undefined && hour >= 1 && hour <= 11) {
+          const nowHour = Number(nowParts.timeStr.slice(0, 2));
+          if (!relDate && hour <= nowHour && hour + 12 > nowHour) {
+            hour += 12;
+          }
+        }
+
+        const jam = `${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+        const isRutin = /\b(tiap|setiap|rutin)\b/i.test(clean) && Boolean(relDate?.hari);
+        const resolvedDate = relDate
+          ? relDate.dateStr
+          : jam > nowParts.timeStr
+            ? nowParts.dateStr
+            : shiftDateStr(nowParts.dateStr, 1);
+
         let nama = clean
           .replace(
-            /^(?:tolong\s+)?(?:(?:pasang|buat(?:kan)?|bikin(?:in)?|set)\s+)?(?:ingetin|ingatkan|tambah(?:kan)?\s+(?:jadwal|alarm)|catat\s+jadwal|jadwal|alarm(?:\s+biasa)?)(?:\s+(?:aku|saya|dong))?\s+/i,
+            /^(?:tolong\s+)?(?:(?:pasang|buat(?:kan)?|bikin(?:in)?|set)\s+)?(?:ingetin|ingatkan|tambah(?:kan)?\s+(?:jadwal|alarm)|catat\s+jadwal|jadwal|alarm(?:\s+biasa|\s+keras)?|telpon|telepon|call|bangunin)(?:\s+(?:aku|saya|dong))?\s*/i,
             ''
           )
           .replace(/\b(?:tiap|setiap|rutin)\b/gi, ' ')
-          .replace(relDate.matchedText, ' ')
-          .replace(jamMatch[0], ' ')
-          .replace(/\b(?:matkul|mata\s+kuliah)\b/gi, ' ')
+          .replace(relDate ? relDate.matchedText : '', ' ')
+          .replace(clockMatch[0], ' ')
+          .replace(/(?:pakai|pake|dengan)\s+(?:ring|dering(?:\s+keras)?|alarm\s+keras|bunyi\s+keras|telpon|telepon|call)\b/gi, ' ')
+          .replace(/\b(?:tanpa\s+(?:ring|dering|telpon|telepon)|no\s+ring)\b/gi, ' ')
+          .replace(/\b(?:ring|dering(?:\s+keras)?)\b/gi, ' ')
+          .replace(/\b(?:matkul|mata\s+kuliah|nanti)\b/gi, ' ')
           .replace(/^(?:untuk|buat|soal)\s+/i, '')
           .replace(/\s+/g, ' ')
           .trim();
-        if (nama) {
-          nama = nama.charAt(0).toUpperCase() + nama.slice(1);
-          const isPresensi = inferIsPresensi({ nama, is_rutin: isRutin, rawText: clean });
-          return {
-            intent: 'TAMBAH_JADWAL',
-            reply_message: isPresensi
-              ? 'Siap, pengingat presensi langsung disimpan!'
-              : 'Siap, alarm biasa langsung dipasang!',
-            payload: {
-              judul: nama,
-              hari: relDate.hari || null,
-              tanggal: isRutin ? null : relDate.dateStr,
-              jam,
-              is_rutin: isRutin,
-              is_presensi: isPresensi,
-              kata_kunci: nama,
-              isi_catatan: nama,
-            },
-          };
+
+        const ringFlag = inferRingLoud(clean) === true;
+        if (!nama) {
+          nama = /\bbangunin\b/i.test(clean) ? 'Bangun Tidur' : ringFlag ? 'Pengingat Alarm' : 'Pengingat';
         }
+        nama = nama.charAt(0).toUpperCase() + nama.slice(1);
+        const isPresensi = inferIsPresensi({ nama, is_rutin: isRutin, rawText: clean });
+        return {
+          intent: 'TAMBAH_JADWAL',
+          reply_message: isPresensi
+            ? 'Siap, pengingat presensi langsung disimpan!'
+            : ringFlag
+              ? 'Siap, alarm dengan dering keras langsung dipasang!'
+              : 'Siap, alarm biasa langsung dipasang!',
+          payload: {
+            judul: nama,
+            hari: relDate?.hari || null,
+            tanggal: isRutin ? null : resolvedDate,
+            jam,
+            is_rutin: isRutin,
+            is_presensi: isPresensi,
+            ring_loud: ringFlag,
+            kata_kunci: nama,
+            isi_catatan: nama,
+          },
+        };
       }
     }
   }
@@ -913,6 +958,10 @@ const RESPONSE_SCHEMA = {
           type: Type.BOOLEAN,
           description: 'true HANYA jika ini jadwal presensi/absen/kuliah/kelas/praktikum/KRS yang harus diingatkan berulang tiap 20 menit sampai dibalas "ok". false untuk alarm biasa / pengingat kegiatan biasa (eksperimen, percobaan, rapat, bimbingan, bangun pagi, minum obat, dll) yang cukup berbunyi 1x.',
         },
+        ring_loud: {
+          type: Type.BOOLEAN,
+          description: 'true jika pengguna meminta dering keras/telpon/call/alarm keras/bangunin ("pakai ring", "ring", "dering keras", "telpon aku", "call", "bangunin") agar MacroDroid di HP berdering keras. false jika tidak diminta atau pengguna menulis "tanpa ring".',
+        },
         menit_tunda: { type: Type.INTEGER, description: 'Jumlah menit tunda untuk SNOOZE_JADWAL.' },
         isi_catatan: { type: Type.STRING, description: 'Ringkasan memori pacar, catatan wishlist/momen, atau konten URL/teks untuk vault.' },
         kata_kunci: { type: Type.STRING, description: 'Kata kunci pencarian memori, tugas, atau label item vault.' },
@@ -965,6 +1014,7 @@ const RESPONSE_SCHEMA = {
               jam: { type: Type.STRING },
               is_rutin: { type: Type.BOOLEAN },
               is_presensi: { type: Type.BOOLEAN },
+              ring_loud: { type: Type.BOOLEAN },
             },
             required: ['judul', 'jam'],
           },
@@ -1041,6 +1091,7 @@ FORMAT OUTPUT JSON WAJIB (hanya keluarkan 1 objek JSON valid tanpa teks tambahan
     "jam": "HH:MM format 24 jam (jika relevan)",
     "is_rutin": true/false,
     "is_presensi": true/false (true HANYA untuk jadwal presensi/absen/kuliah/kelas/praktikum/KRS; false untuk alarm biasa/pengingat kegiatan umum),
+    "ring_loud": true/false (true jika pengguna meminta ring/dering keras/telpon/call/alarm keras/bangunin; false jika tidak),
     "menit_tunda": integer,
     "isi_catatan": "string (ringkasan memori / detail wishlist / isi link/teks bersih untuk vault)",
     "kata_kunci": "string (judul singkat Title Case 2-4 kata untuk vault / keyword pencarian)",
@@ -1048,7 +1099,7 @@ FORMAT OUTPUT JSON WAJIB (hanya keluarkan 1 objek JSON valid tanpa teks tambahan
     "tipe_item": "WISHLIST|MOMEN|LINK|FILE",
     "ulang": "TAHUNAN|BULANAN|SEKALI",
     "expenses": [{ "item": "string", "nominal": integer_rupiah, "kategori": "Makan & Minum|Transportasi|Akademik|Hiburan|Uang Saku|Gaji & Freelance|Beasiswa|Hadiah & Bonus|Lainnya" }],
-    "schedules": [{ "judul": "string", "hari": "string", "tanggal": "YYYY-MM-DD", "jam": "HH:MM", "is_rutin": true/false, "is_presensi": true/false }],
+    "schedules": [{ "judul": "string", "hari": "string", "tanggal": "YYYY-MM-DD", "jam": "HH:MM", "is_rutin": true/false, "is_presensi": true/false, "ring_loud": true/false }],
     "tasks": [{ "judul": "string", "matkul": "string", "tanggal": "YYYY-MM-DD", "jam": "HH:MM" }]
   }
 }
@@ -1335,6 +1386,10 @@ ATURAN KLASIFIKASI INTENT:
    - WAJIB BEDAKAN ALARM PRESENSI vs ALARM BIASA lewat field payload.is_presensi:
      * Set is_presensi = true HANYA untuk jadwal PRESENSI / ABSEN / KULIAH / MATA KULIAH / KELAS / PRAKTIKUM / screenshot KRS (ini akan berulang tiap 20 menit sampai pengguna balas "ok").
      * Set is_presensi = false untuk ALARM BIASA / PENGINGAT KEGIATAN BIASA (contoh: "mulai percobaan Unet/DeepLab", "alarm bangun pagi", "rapat organisasi", "bimbingan skripsi", "minum obat", "olahraga", "bayar kos", "nonton"). Alarm biasa hanya berbunyi 1 kali tanpa pengulangan "ok"!
+   - MODE DERING KERAS (payload.ring_loud):
+     * Set ring_loud = true jika pengguna meminta dering keras / seperti ditelepon ("pakai ring", "ring", "dering keras", "telpon aku", "telepon", "call", "alarm keras", "bangunin").
+     * Set ring_loud = false jika tidak disebut atau pengguna bilang "tanpa ring".
+     * Konversi jam santai Indonesia: "jam 2 siang" -> "14:00", "jam 2 pagi/malam" -> "02:00", "jam 7 malam" -> "19:00".
    - Jika gambar/teks memuat banyak jadwal sekaligus (misal KRS), isi array payload.schedules (dan sertakan is_presensi di tiap item)!
 1B. CEK_JADWAL: Pengguna ingin melihat daftar jadwal kuliah/presensi/kegiatan ("cek jadwal", "jadwal hari ini apa?", "jadwal besok", "jadwal hari Selasa").
    - Jika spesifik hari/tanggal, isi payload.hari atau payload.tanggal; jika umum ("cek jadwal"), kosongkan keduanya.
@@ -1381,7 +1436,7 @@ ATURAN KLASIFIKASI INTENT:
     - Isi payload.tanggal (default ${nowParts.dateStr}).
 13. REKAP_PENGELUARAN: Pengguna meminta rekap keuangan, saldo, pemasukan, atau pengeluaran ("Pengeluaran hari ini berapa?", "rekap keuangan bulan ini", "saldo bulan ini berapa?", "rekap jajan minggu ini").
     - Hitung payload.tanggal_mulai dan payload.tanggal_akhir (YYYY-MM-DD) secara tepat berdasarkan ${nowParts.dateStr}.
-14. TAMBAH_REMINDER: Pengingat cepat berbasis durasi ("ingetin 30 menit lagi matiin kompor", "ingatkan 2 jam lagi bayar kos"). Isi payload.menit_tunda (integer menit) & payload.judul (pesan pengingat).
+14. TAMBAH_REMINDER: Pengingat cepat berbasis durasi ("ingetin 30 menit lagi matiin kompor", "ingatkan 2 jam lagi bayar kos pakai ring"). Isi payload.menit_tunda (integer menit), payload.judul (pesan pengingat), dan payload.ring_loud = true jika pengguna menyebut ring/dering/telpon/call/alarm keras.
 15. REKOMENDASI_PACAR: Pengguna meminta rekomendasi tempat kencan/date ("Weekend ini enaknya ngajak dia ke mana?", "Saran tempat nongkrong buat date") atau rekomendasi kado/hadiah buat pacar ("Kasih rekomendasi kado buat dia di bawah 200rb", "Ide hadiah buat ultah pacar").
     - Isi payload.kata_kunci dengan konteks permintaan user.
     - Jika disebutkan batas anggaran/budget (misal "di bawah 200rb"), isi payload.budget sebagai integer Rupiah (200000).

@@ -45,6 +45,7 @@ export async function checkSchedules(now = new Date()) {
     firedScheduleKeys.clear();
   }
 
+  const settings = settingsRepo.getNotificationSettings();
   let triggered = 0;
   for (const item of dueList) {
     const dedupKey = `jadwal:${item.id}:${parts.dateStr}:${parts.timeStr}`;
@@ -54,6 +55,11 @@ export async function checkSchedules(now = new Date()) {
     const tipeLabel = item.is_rutin ? `Rutin setiap ${item.hari}` : `Sekali jalan (${item.tanggal})`;
     const shouldRepeat = Number(item.repeat_until_ok) === 1 && !/\(Snooze\)/i.test(item.nama || '');
     const interval = Math.max(1, Math.min(180, Number(item.repeat_interval_min) || 20));
+    const itemRing = Number(item.ring_loud) === 1;
+    const ringLoud = Boolean(
+      settings.ringEnabled &&
+        (itemRing || (shouldRepeat ? settings.ringOnPresensi : settings.ringOnNormalAlarm))
+    );
 
     const title = shouldRepeat ? `⏰ Presensi: ${item.nama}` : `⏰ Alarm: ${item.nama}`;
     const body = shouldRepeat
@@ -64,6 +70,7 @@ export async function checkSchedules(now = new Date()) {
       recordForSnooze: true,
       activityName: item.nama,
       tag: dedupKey,
+      ringLoud,
     });
 
     if (shouldRepeat) {
@@ -75,6 +82,7 @@ export async function checkSchedules(now = new Date()) {
         jam_awal: item.jam,
         interval_menit: interval,
         next_trigger_at: nextTarget.dateTimeStr,
+        ring_loud: itemRing ? 1 : 0,
       });
       emitDataChange('jadwal', 'scheduler');
     }
@@ -96,6 +104,7 @@ const MAX_PRESENSI_REPEATS = 12; // 12 x 20 menit = 4 jam batas aman
  */
 export async function checkPendingPresensi(now = new Date()) {
   const parts = getWibParts(now);
+  const settings = settingsRepo.getNotificationSettings();
   const dueList = presensiPendingRepo.getDue(parts.dateTimeStr);
   let triggered = 0;
 
@@ -131,10 +140,12 @@ export async function checkPendingPresensi(now = new Date()) {
       `🔁 Pengingat ulang ke-${nextCount} (setiap ${interval} menit).\n\n` +
       `_Balas *"ok"* jika sudah presensi untuk menghentikan pengingat._`;
 
+    const ringLoud = Boolean(settings.ringEnabled && (Number(row.ring_loud) === 1 || settings.ringOnPresensi));
     await sendDualNotification(`🔔 Pengingat Presensi #${nextCount}: ${row.nama}`, body, '/#jadwal', {
       recordForSnooze: true,
       activityName: row.nama,
       tag: `presensi-repeat-${row.id}-${nextCount}`,
+      ringLoud,
     });
     emitDataChange('jadwal', 'scheduler');
     triggered += 1;
@@ -172,6 +183,7 @@ export async function checkTaskDeadlines(now = new Date()) {
         recordForSnooze: true,
         activityName: `Tugas ${task.judul}`,
         tag: `tugas-h3-${task.id}`,
+        ringLoud: Boolean(settings.ringEnabled && settings.ringOnUrgentTask),
       });
 
       tugasRepo.markNotif(task.id, { notif_h1: 1, notif_h3jam: 1 });
@@ -269,16 +281,21 @@ export async function checkSpecialMoments(now = new Date(), { ignoreHourGate = f
  */
 export async function checkQuickReminders(now = new Date()) {
   const parts = getWibParts(now);
+  const settings = settingsRepo.getNotificationSettings();
   const due = reminderRepo.getDue(parts.dateTimeStr);
   let triggered = 0;
 
   for (const rem of due) {
     reminderRepo.markDone(rem.id);
+    const ringLoud = Boolean(
+      settings.ringEnabled && (Number(rem.ring_loud) === 1 || settings.ringOnQuickReminder)
+    );
     const body = `Waktunya: *${rem.pesan}*\n🕐 ${rem.trigger_at} WIB\n\n_Balas "/s 10" untuk tunda 10 menit lagi._`;
     await sendDualNotification(`⏰ Pengingat Cepat`, body, '/', {
       recordForSnooze: true,
       activityName: rem.pesan,
       tag: `quick-rem-${rem.id}`,
+      ringLoud,
     });
     emitDataChange('reminder', 'scheduler');
     triggered += 1;

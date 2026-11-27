@@ -1129,6 +1129,21 @@
             <input id="jadwal-repeat-interval" type="number" min="1" max="180" value="20" />
           </label>
         </div>
+        <div class="settings-box">
+          <div class="settings-row-head">
+            <div>
+              <div class="settings-box-title">
+                <i data-lucide="phone-call" class="icon-15"></i>
+                <span>Dering Keras HP (MacroDroid)</span>
+              </div>
+              <div class="text-xs muted">Sematkan tag [ALARM-RING] agar MacroDroid Android membunyikan dering keras seperti ditelepon</div>
+            </div>
+            <label class="switch">
+              <input id="jadwal-ring-loud" type="checkbox" />
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-ghost" data-close-modal="modal-jadwal">Batal</button>
           <button type="submit" class="btn btn-primary">Simpan Jadwal</button>
@@ -1387,6 +1402,39 @@
               <span>Jam Backup (WIB)</span>
               <input id="settings-backup-time" type="time" required />
             </label>
+          </div>
+        </div>
+
+        <div class="settings-box">
+          <div class="settings-row-head">
+            <div>
+              <div class="settings-box-title">
+                <i data-lucide="phone-call" class="icon-15"></i>
+                <span>Mode Dering Keras HP (MacroDroid)</span>
+              </div>
+              <div class="text-xs muted">Sematkan tag [ALARM-RING] di pesan WA agar MacroDroid Android membunyikan dering seperti ditelepon</div>
+            </div>
+            <label class="switch">
+              <input id="settings-ring-enabled" type="checkbox" checked />
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div class="notif-chip-grid">
+            <label class="notif-chip"><input id="settings-ring-presensi" type="checkbox" checked /><span>Presensi &amp; Ulang 20m</span></label>
+            <label class="notif-chip"><input id="settings-ring-normal" type="checkbox" /><span>Semua Alarm Biasa</span></label>
+            <label class="notif-chip"><input id="settings-ring-reminder" type="checkbox" /><span>Semua Pengingat Cepat</span></label>
+            <label class="notif-chip"><input id="settings-ring-task" type="checkbox" checked /><span>Deadline Mendesak</span></label>
+          </div>
+          <div class="text-xs muted">Tips: Di chat WA kamu juga bisa bilang "ingatkan aku jam 2 siang pakai ring" atau ketik <code>/ring 5</code> untuk tes sambil mengunci layar HP.</div>
+          <div class="header-actions">
+            <button id="btn-copy-ring-tag" class="btn btn-secondary btn-sm" type="button">
+              <i data-lucide="copy" class="icon-14"></i>
+              <span>Salin Tag [ALARM-RING]</span>
+            </button>
+            <button id="btn-test-ring-hp" class="btn btn-secondary btn-sm" type="button">
+              <i data-lucide="bell-ring" class="icon-14"></i>
+              <span>Test Dering (5 Detik)</span>
+            </button>
           </div>
         </div>
 

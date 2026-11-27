@@ -48,7 +48,7 @@ import {
   isGroqConfigured,
   testAiEngines,
 } from '../services/gemini.js';
-import { isWebPushConfigured, sendDualNotification } from '../services/notifier.js';
+import { isWebPushConfigured, sendDualNotification, sendRingTestNotification } from '../services/notifier.js';
 import { reloadScheduler, runMorningBriefing, runWeeklyBackup } from '../services/scheduler.js';
 import {
   getWhatsAppStatus,
@@ -320,6 +320,19 @@ router.post('/actions/test-notification', async (_req, res) => {
     { recordForSnooze: true, activityName: 'Test Pengingat' }
   );
   res.json({ ok: true, result });
+});
+
+router.post('/actions/test-ring', async (req, res) => {
+  const delaySec = Math.max(0, Math.min(30, Math.round(Number(req.body?.delaySeconds) || 0)));
+  if (delaySec > 0) {
+    const timer = setTimeout(() => {
+      sendRingTestNotification('Test Dering Keras HP (MacroDroid)').catch(() => {});
+    }, delaySec * 1000);
+    timer.unref?.();
+    return res.json({ ok: true, delayedSeconds: delaySec });
+  }
+  const result = await sendRingTestNotification('Test Dering Keras HP (MacroDroid)');
+  return res.json({ ok: true, delayedSeconds: 0, result });
 });
 
 router.post('/actions/morning-briefing', async (_req, res) => {
@@ -837,7 +850,11 @@ router.post('/reminders', (req, res) => {
       const mins = Math.max(1, Math.min(1440, Math.round(Number(req.body.menit))));
       triggerAt = addMinutesWib(mins).dateTimeStr;
     }
-    const created = reminderRepo.create({ pesan, trigger_at: triggerAt });
+    const created = reminderRepo.create({
+      pesan,
+      trigger_at: triggerAt,
+      ring_loud: req.body?.ring_loud ? 1 : 0,
+    });
     emitDataChange('reminder', 'api');
     res.status(201).json(created);
   } catch (err) {
