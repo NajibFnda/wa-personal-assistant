@@ -18,6 +18,7 @@ import {
   presensiPendingRepo,
   reminderRepo,
   resolveUploadPath,
+  settingsRepo,
   tugasRepo,
   vaultRepo,
   wishlistRepo,
@@ -143,7 +144,8 @@ function buildHelpText() {
     '• `/j <hari/YYYY-MM-DD> <HH:MM> <nama> [ring]`',
     '• `/ok` _(atau balas `ok`)_ — Hentikan pengingat presensi berulang (tiap 20m)',
     '• `/s <menit>` — Snooze pengingat terakhir',
-    '• `/ring [detik]` — Tes dering keras HP MacroDroid (`[ALARM-RING]`)',
+    '• `/ring [detik]` — Tes dering keras HP (`ntfy` Urgent + `[ALARM-RING]`)',
+    '• `/ntfy` — Lihat topik rahasia & cara pasang aplikasi `ntfy`',
     '',
     '📝 *Tugas & Deadline*',
     '• `/t` — Lihat semua tugas aktif',
@@ -1015,15 +1017,33 @@ export async function handleSlashCommand({
       const delaySec = args ? Math.max(0, Math.min(60, Math.round(Number(args) || 0))) : 0;
       if (delaySec > 0) {
         const timer = setTimeout(() => {
-          sendRingTestNotification('Test Dering Keras HP (MacroDroid)').catch(() => {});
+          sendRingTestNotification('Test Dering Keras HP (ntfy Urgent)').catch(() => {});
         }, delaySec * 1000);
         timer.unref?.();
         return {
-          text: `🔔 Siap! Sinyal dering keras akan dikirim dalam *${delaySec} detik*.\nSilakan kunci layar HP sekarang untuk menguji MacroDroid.`,
+          text: `🔔 Siap! Sinyal dering keras (WA + ntfy Urgent) akan dikirim dalam *${delaySec} detik*.\nSilakan kunci layar HP sekarang untuk menguji dering!`,
         };
       }
-      await sendRingTestNotification('Test Dering Keras HP (MacroDroid)');
+      await sendRingTestNotification('Test Dering Keras HP (ntfy Urgent)');
       return { skipReply: true };
+    }
+
+    case 'ntfy': {
+      const s = settingsRepo.getNotificationSettings();
+      return {
+        text: [
+          '🔔 *Pengaturan Dering Keras HP via `ntfy`*',
+          `• Status: *${s.ntfyEnabled ? 'Aktif (Priority 5 / Urgent)' : 'Nonaktif'}*`,
+          `• Server: \`${s.ntfyServer || 'https://ntfy.sh'}\``,
+          `• Topik Rahasia Kamu:\n\`${s.ntfyTopic}\``,
+          '',
+          '*Cara Pasang di HP Android (30 Detik):*',
+          '1. Install *ntfy* di Play Store (oleh Philipp C. Heckel).',
+          '2. Buka ntfy → tap tombol *+* → tempel topik rahasia di atas → tap *Subscribe*.',
+          '3. Buka *Settings* di ntfy → aktifkan *Keep alerting for highest priority* (biar berdering terus seperti ditelepon).',
+          '4. Uji coba dengan kirim `/ring 5` di chat ini lalu kunci layar HP!',
+        ].join('\n'),
+      };
     }
 
     case 'briefing': {

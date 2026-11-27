@@ -220,6 +220,21 @@ export function normalizeRecurrence(input) {
 }
 
 export const MACRODROID_RING_TAG = '[ALARM-RING]';
+export const DEFAULT_NTFY_SERVER = 'https://ntfy.sh';
+
+export function getOrCreateNtfyTopic() {
+  const envTopic = String(process.env.NTFY_TOPIC || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, '');
+  if (envTopic.length >= 6) return envTopic;
+
+  const saved = stateRepo.get('ntfy_topic');
+  if (saved && /^[a-zA-Z0-9_-]{6,64}$/.test(saved)) return saved;
+
+  const generated = `pa-ring-${crypto.randomBytes(8).toString('hex')}`;
+  stateRepo.set('ntfy_topic', generated);
+  return generated;
+}
 
 export function inferRingLoud(text = '') {
   const str = String(text || '').trim();
@@ -248,6 +263,8 @@ export const DEFAULT_NOTIFICATION_SETTINGS = {
   ringOnNormalAlarm: false,
   ringOnQuickReminder: false,
   ringOnUrgentTask: true,
+  ntfyEnabled: true,
+  ntfyServer: DEFAULT_NTFY_SERVER,
 };
 
 export function parseNotifDays(input, fallback = []) {
@@ -428,6 +445,18 @@ export const settingsRepo = {
         saved.ringOnUrgentTask !== undefined
           ? Boolean(saved.ringOnUrgentTask)
           : DEFAULT_NOTIFICATION_SETTINGS.ringOnUrgentTask,
+      ntfyEnabled:
+        saved.ntfyEnabled !== undefined
+          ? Boolean(saved.ntfyEnabled)
+          : DEFAULT_NOTIFICATION_SETTINGS.ntfyEnabled,
+      ntfyTopic:
+        typeof saved.ntfyTopic === 'string' && /^[a-zA-Z0-9_-]{6,64}$/.test(saved.ntfyTopic.trim())
+          ? saved.ntfyTopic.trim()
+          : getOrCreateNtfyTopic(),
+      ntfyServer:
+        typeof saved.ntfyServer === 'string' && /^https?:\/\//i.test(saved.ntfyServer.trim())
+          ? saved.ntfyServer.trim().replace(/\/+$/, '')
+          : DEFAULT_NTFY_SERVER,
     };
   },
 
@@ -501,6 +530,24 @@ export const settingsRepo = {
     }
     if (patch.ringOnUrgentTask !== undefined) {
       next.ringOnUrgentTask = Boolean(patch.ringOnUrgentTask);
+    }
+    if (patch.ntfyEnabled !== undefined) {
+      next.ntfyEnabled = Boolean(patch.ntfyEnabled);
+    }
+    if (patch.ntfyTopic !== undefined) {
+      const cleanTopic = String(patch.ntfyTopic || '').trim();
+      if (!/^[a-zA-Z0-9_-]{6,64}$/.test(cleanTopic)) {
+        throw new Error('Topik ntfy harus 6–64 karakter (huruf, angka, tanda - atau _).');
+      }
+      next.ntfyTopic = cleanTopic;
+      stateRepo.set('ntfy_topic', cleanTopic);
+    }
+    if (patch.ntfyServer !== undefined) {
+      const cleanSrv = String(patch.ntfyServer || '').trim().replace(/\/+$/, '');
+      if (!/^https?:\/\/.+/.test(cleanSrv)) {
+        throw new Error('URL server ntfy harus diawali http:// atau https://.');
+      }
+      next.ntfyServer = cleanSrv;
     }
 
     stateRepo.setJson('notification_settings', next);

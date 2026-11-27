@@ -1413,6 +1413,8 @@ async function openNotifSettingsModal() {
     if ($('#settings-ring-normal')) $('#settings-ring-normal').checked = Boolean(s.ringOnNormalAlarm);
     if ($('#settings-ring-reminder')) $('#settings-ring-reminder').checked = Boolean(s.ringOnQuickReminder);
     if ($('#settings-ring-task')) $('#settings-ring-task').checked = s.ringOnUrgentTask !== false;
+    if ($('#settings-ntfy-enabled')) $('#settings-ntfy-enabled').checked = s.ntfyEnabled !== false;
+    if ($('#settings-ntfy-topic')) $('#settings-ntfy-topic').value = s.ntfyTopic || '';
     openModal('modal-notif-settings');
   } catch (err) {
     toast(err.message, 'error');
@@ -3178,6 +3180,8 @@ function bindFormsAndActions() {
       ringOnNormalAlarm: $('#settings-ring-normal')?.checked ?? false,
       ringOnQuickReminder: $('#settings-ring-reminder')?.checked ?? false,
       ringOnUrgentTask: $('#settings-ring-task')?.checked ?? true,
+      ntfyEnabled: $('#settings-ntfy-enabled')?.checked ?? true,
+      ntfyTopic: $('#settings-ntfy-topic')?.value.trim() || undefined,
     };
     try {
       await api('/api/settings/notifications', {
@@ -3193,10 +3197,24 @@ function bindFormsAndActions() {
     }
   });
 
+  $('#btn-copy-ntfy-topic')?.addEventListener('click', async () => {
+    const topic = $('#settings-ntfy-topic')?.value.trim() || state.notifSettings?.ntfyTopic || '';
+    if (!topic) {
+      toast('Topik ntfy belum tersedia.', 'error');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(topic);
+      toast(`Topik ntfy "${topic}" disalin. Tempel di aplikasi ntfy Android.`, 'success');
+    } catch {
+      toast(`Salin manual topik ntfy: ${topic}`, 'info');
+    }
+  });
+
   $('#btn-copy-ring-tag')?.addEventListener('click', async () => {
     try {
       await navigator.clipboard.writeText('[ALARM-RING]');
-      toast('Tag [ALARM-RING] disalin. Tempel di filter teks MacroDroid.', 'success');
+      toast('Tag [ALARM-RING] disalin.', 'success');
     } catch {
       toast('Gagal menyalin otomatis. Salin manual: [ALARM-RING]', 'info');
     }
@@ -3208,7 +3226,7 @@ function bindFormsAndActions() {
         method: 'POST',
         body: JSON.stringify({ delaySeconds: 5 }),
       });
-      toast('Sinyal [ALARM-RING] akan dikirim dalam 5 detik. Kunci layar HP untuk uji MacroDroid.', 'success');
+      toast('Sinyal dering (ntfy Urgent + WA) dikirim dalam 5 detik. Kunci layar HP sekarang!', 'success');
     } catch (err) {
       toast(err.message, 'error');
     }

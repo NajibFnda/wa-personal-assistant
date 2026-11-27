@@ -1134,9 +1134,9 @@
             <div>
               <div class="settings-box-title">
                 <i data-lucide="phone-call" class="icon-15"></i>
-                <span>Dering Keras HP (MacroDroid)</span>
+                <span>Dering Keras HP (ntfy Urgent)</span>
               </div>
-              <div class="text-xs muted">Sematkan tag [ALARM-RING] agar MacroDroid Android membunyikan dering keras seperti ditelepon</div>
+              <div class="text-xs muted">Kirim alert Priority Urgent ke aplikasi ntfy (dan tag [ALARM-RING]) agar HP berdering keras terus-menerus seperti ditelepon</div>
             </div>
             <label class="switch">
               <input id="jadwal-ring-loud" type="checkbox" />
@@ -1410,9 +1410,9 @@
             <div>
               <div class="settings-box-title">
                 <i data-lucide="phone-call" class="icon-15"></i>
-                <span>Mode Dering Keras HP (MacroDroid)</span>
+                <span>Mode Dering Keras HP (ntfy Urgent)</span>
               </div>
-              <div class="text-xs muted">Sematkan tag [ALARM-RING] di pesan WA agar MacroDroid Android membunyikan dering seperti ditelepon</div>
+              <div class="text-xs muted">Kirim notifikasi Urgent (Priority 5) ke aplikasi ntfy Android agar HP berdering terus-menerus seperti ditelepon (tanpa bikin flow/macro)</div>
             </div>
             <label class="switch">
               <input id="settings-ring-enabled" type="checkbox" checked />
@@ -1425,15 +1425,33 @@
             <label class="notif-chip"><input id="settings-ring-reminder" type="checkbox" /><span>Semua Pengingat Cepat</span></label>
             <label class="notif-chip"><input id="settings-ring-task" type="checkbox" checked /><span>Deadline Mendesak</span></label>
           </div>
-          <div class="text-xs muted">Tips: Di chat WA kamu juga bisa bilang "ingatkan aku jam 2 siang pakai ring" atau ketik <code>/ring 5</code> untuk tes sambil mengunci layar HP.</div>
+          <div class="settings-row-head">
+            <div>
+              <div class="text-sm fw-600">Kirim ke Aplikasi ntfy (https://ntfy.sh)</div>
+              <div class="text-xs muted">Salin topik rahasia di bawah, buka aplikasi ntfy Android, tap (+), lalu tempel topik tersebut</div>
+            </div>
+            <label class="switch">
+              <input id="settings-ntfy-enabled" type="checkbox" checked />
+              <span class="slider"></span>
+            </label>
+          </div>
+          <label class="field">
+            <span>Topik Rahasia ntfy</span>
+            <input id="settings-ntfy-topic" class="mono text-xs" type="text" placeholder="pa-ring-..." />
+          </label>
+          <div class="text-xs muted">Tips WA: ketik "ingatkan aku jam 2 siang pakai ring", "/ntfy" untuk salin topik dari WA, atau "/ring 5" untuk tes sambil mengunci layar HP.</div>
           <div class="header-actions">
-            <button id="btn-copy-ring-tag" class="btn btn-secondary btn-sm" type="button">
+            <button id="btn-copy-ntfy-topic" class="btn btn-primary btn-sm" type="button">
               <i data-lucide="copy" class="icon-14"></i>
-              <span>Salin Tag [ALARM-RING]</span>
+              <span>Salin Topik ntfy</span>
             </button>
             <button id="btn-test-ring-hp" class="btn btn-secondary btn-sm" type="button">
               <i data-lucide="bell-ring" class="icon-14"></i>
               <span>Test Dering (5 Detik)</span>
+            </button>
+            <button id="btn-copy-ring-tag" class="btn btn-ghost btn-sm" type="button">
+              <i data-lucide="tag" class="icon-14"></i>
+              <span>Salin [ALARM-RING]</span>
             </button>
           </div>
         </div>

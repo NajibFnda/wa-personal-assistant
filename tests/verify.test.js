@@ -39,6 +39,7 @@ describe('All-in-One Personal Assistant End-to-End Verification (Isolated Test D
   let server;
   let baseUrl;
   const sentWaMessages = [];
+  const sentNtfyPayloads = [];
 
   before(async () => {
     const appMod = await import('../src/app.js');
@@ -68,6 +69,9 @@ describe('All-in-One Personal Assistant End-to-End Verification (Isolated Test D
     initWebPush();
     registerWhatsAppSender(async (text) => {
       sentWaMessages.push(text);
+    });
+    notifMod.registerNtfyPublisher(async (payload) => {
+      sentNtfyPayloads.push(payload);
     });
 
     const app = createApp();
@@ -1053,13 +1057,17 @@ describe('All-in-One Personal Assistant End-to-End Verification (Isolated Test D
     });
     assert.match(ringExec.text, /Dering Keras \[RING\]/);
 
-    // Fire at 14:00 -> MUST include [ALARM-RING] at top of WA message
+    // Fire at 14:00 -> MUST include [ALARM-RING] on WA AND publish priority 5 to ntfy
     const beforeFire = sentWaMessages.length;
+    const beforeNtfy = sentNtfyPayloads.length;
     await checkSchedules(new Date('2026-11-28T14:00:00+07:00'));
     assert.equal(sentWaMessages.length, beforeFire + 1);
     assert.ok(sentWaMessages[sentWaMessages.length - 1].startsWith('[ALARM-RING]\n'));
+    assert.equal(sentNtfyPayloads.length, beforeNtfy + 1);
+    assert.equal(sentNtfyPayloads[sentNtfyPayloads.length - 1].priority, 5);
+    assert.match(sentNtfyPayloads[sentNtfyPayloads.length - 1].topic, /^pa-ring-[a-f0-9]{16}$/);
 
-    // 2. Normal alarm WITHOUT ring ("ingatkan aku jam 3 siang baca jurnal") -> ring_loud=0 -> NO [ALARM-RING]
+    // 2. Normal alarm WITHOUT ring ("ingatkan aku jam 3 siang baca jurnal") -> ring_loud=0 -> NO [ALARM-RING] and NO ntfy
     const silentIntent = tryLocalFastIntent({
       text: 'ingatkan aku jam 3 siang baca jurnal',
       hasMedia: false,
@@ -1069,8 +1077,10 @@ describe('All-in-One Personal Assistant End-to-End Verification (Isolated Test D
     assert.equal(silentIntent?.payload?.jam, '15:00');
     assert.equal(silentIntent?.payload?.ring_loud, false);
     await executeIntent({ result: silentIntent, rawText: 'ingatkan aku jam 3 siang baca jurnal', now: morning });
+    const ntfyBeforeSilent = sentNtfyPayloads.length;
     await checkSchedules(new Date('2026-11-28T15:00:00+07:00'));
     assert.doesNotMatch(sentWaMessages[sentWaMessages.length - 1], /\[ALARM-RING\]/);
+    assert.equal(sentNtfyPayloads.length, ntfyBeforeSilent);
 
     // 3. Quick reminder with ring ("ingetin 30 menit lagi matiin kompor pakai ring" + "/r 10m cek oven ring")
     const qRemIntent = tryLocalFastIntent({
@@ -1110,15 +1120,20 @@ describe('All-in-One Personal Assistant End-to-End Verification (Isolated Test D
     assert.equal(apiRingJson.ok, true);
     assert.equal(apiRingJson.result?.ringLoud, true);
 
-    // 5. Global settings toggle persists cleanly via API
+    // 5. /ntfy command + Global settings toggle persists cleanly via API
+    const ntfyCmd = await handleSlashCommand({ text: '/ntfy', now: morning });
+    const currentTopic = settingsRepo.getNotificationSettings().ntfyTopic;
+    assert.ok(ntfyCmd?.text.includes(currentTopic));
+
     const putSet = await fetch(`${baseUrl}/api/settings/notifications`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ringOnNormalAlarm: true }),
+      body: JSON.stringify({ ringOnNormalAlarm: true, ntfyTopic: 'pa-custom-topic-01' }),
     });
     assert.equal(putSet.status, 200);
     assert.equal(settingsRepo.getNotificationSettings().ringOnNormalAlarm, true);
-    settingsRepo.updateNotificationSettings({ ringOnNormalAlarm: false });
+    assert.equal(settingsRepo.getNotificationSettings().ntfyTopic, 'pa-custom-topic-01');
+    settingsRepo.updateNotificationSettings({ ringOnNormalAlarm: false, ntfyTopic: currentTopic });
 
     // Confirm jadwalRepo stores ring_loud=1 when created directly
     const jDirect = jadwalRepo.create({ nama: 'Telpon Bangun', tanggal: '2026-11-29', jam: '05:00', is_rutin: 0, ring_loud: 1 });

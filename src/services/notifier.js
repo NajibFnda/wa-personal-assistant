@@ -1,9 +1,10 @@
 import * as webpush from 'web-push';
-import { MACRODROID_RING_TAG, pushRepo, stateRepo } from '../config/db.js';
+import { MACRODROID_RING_TAG, pushRepo, settingsRepo, stateRepo } from '../config/db.js';
 import { getWibParts } from '../utils/time.js';
 
 let vapidConfigured = false;
 let waSenderFn = null;
+let ntfyPublisherFn = null;
 let lastReminderCache = null;
 
 export function initWebPush() {
@@ -36,6 +37,66 @@ export function isWebPushConfigured() {
 
 export function registerWhatsAppSender(fn) {
   waSenderFn = fn;
+}
+
+export function registerNtfyPublisher(fn) {
+  ntfyPublisherFn = fn;
+}
+
+function stripWaMarkdown(str = '') {
+  return String(str || '')
+    .replace(/[*_`]/g, '')
+    .trim();
+}
+
+/**
+ * Publish an Urgent (priority 5) alert to ntfy so Android ntfy app rings continuously like an alarm/call.
+ */
+export async function sendNtfyUrgentAlert({
+  title,
+  body,
+  priority = 5,
+  tags = ['alarm_clock', 'rotating_light'],
+}) {
+  const settings = settingsRepo.getNotificationSettings();
+  if (!settings.ntfyEnabled || !settings.ntfyTopic) {
+    return { sent: false, skipped: true, topic: settings.ntfyTopic || null };
+  }
+
+  const serverUrl = String(settings.ntfyServer || 'https://ntfy.sh').replace(/\/+$/, '');
+  const payload = {
+    topic: settings.ntfyTopic,
+    title: stripWaMarkdown(title) || 'Alarm Personal Assistant',
+    message: stripWaMarkdown(body) || 'Waktunya pengingat!',
+    priority: Math.max(1, Math.min(5, Number(priority) || 5)),
+    tags,
+  };
+
+  if (typeof ntfyPublisherFn === 'function') {
+    try {
+      await ntfyPublisherFn(payload, serverUrl);
+      return { sent: true, skipped: false, topic: settings.ntfyTopic, priority: payload.priority };
+    } catch (err) {
+      return { sent: false, skipped: false, topic: settings.ntfyTopic, error: err?.message || String(err) };
+    }
+  }
+
+  try {
+    const res = await fetch(`${serverUrl}/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => `HTTP ${res.status}`);
+      throw new Error(errText || `ntfy HTTP ${res.status}`);
+    }
+    return { sent: true, skipped: false, topic: settings.ntfyTopic, priority: payload.priority };
+  } catch (err) {
+    console.error('[Notifier] ntfy delivery failed:', err?.message || err);
+    return { sent: false, skipped: false, topic: settings.ntfyTopic, error: err?.message || String(err) };
+  }
 }
 
 export function setLastReminder({ title, body, activityName }) {
@@ -143,23 +204,29 @@ export async function sendDualNotification(title, body, url = '/', options = {})
   }
 
   const pushTitle = ringLoud ? `${MACRODROID_RING_TAG} ${title}` : title;
-  const webPushResult = await sendWebPushNotification(pushTitle, body, url, tag);
+  const [webPushResult, ntfyResult] = await Promise.all([
+    sendWebPushNotification(pushTitle, body, url, tag),
+    ringLoud
+      ? sendNtfyUrgentAlert({ title, body, priority: 5 })
+      : Promise.resolve({ sent: false, skipped: true }),
+  ]);
 
   return {
     whatsapp: waResult,
     webPush: webPushResult,
+    ntfy: ntfyResult,
     ringLoud: Boolean(ringLoud),
   };
 }
 
 /**
- * Send a direct MacroDroid loud ring test alert ([ALARM-RING]).
+ * Send a direct loud ring test alert (WhatsApp [ALARM-RING] + ntfy Urgent priority 5 + Web Push).
  */
-export async function sendRingTestNotification(label = 'Test Dering Keras HP (MacroDroid)') {
+export async function sendRingTestNotification(label = 'Test Dering Keras HP (ntfy Urgent)') {
   const parts = getWibParts();
   return sendDualNotification(
     `🔔 ${label}`,
-    `Sinyal pemicu dering keras dikirim pada *${parts.display}*.\nJika MacroDroid sudah aktif, HP akan berdering keras sekarang!`,
+    `Sinyal dering keras (WA + ntfy Urgent) dikirim pada *${parts.display}*.\nJika ntfy sudah terpasang dengan "Keep alerting for highest priority", HP akan berdering keras terus-menerus sekarang!`,
     '/#jadwal',
     {
       recordForSnooze: false,
