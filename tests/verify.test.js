@@ -1173,6 +1173,17 @@ describe('All-in-One Personal Assistant End-to-End Verification (Isolated Test D
     assert.match(outExec.text, /Alarm Nomor Lain Tersimpan/);
     assert.match(outExec.text, /Setiap Hari mulai pukul \*06:00 WIB\*/);
 
+    // 2B. Natural Indonesian "tiap pagi jam 6" + possessive "pacarku" & contact catatan match
+    contactRepo.upsert({ nama: 'Yuna', nomor: '081277766655', catatan: 'pacar kesayangan' });
+    const pagiText = "kirim alarm ke pacarku dengan pesan 'bangun' tiap pagi jam 6 sampai dia balas ok";
+    const pagiIntent = tryLocalFastIntent({ text: pagiText, hasMedia: false, now });
+    assert.equal(pagiIntent?.intent, 'KIRIM_ALARM_ORANG');
+    assert.equal(pagiIntent?.payload?.mode_jadwal, 'HARIAN');
+    assert.equal(pagiIntent?.payload?.jam, '06:00');
+    assert.equal(pagiIntent?.payload?.judul, 'Bangun');
+    assert.equal(pagiIntent?.payload?.ulang_sampai_ok, true);
+    assert.equal(contactRepo.findByNameOrNumber('pacarku')?.nama, 'Pacar');
+
     // 3. Fire at 06:00 WIB next morning -> sends #1 to target & queues repeat for 06:10
     const beforeTarget = sentTargetMessages.length;
     const fired0600 = await checkOutboundAlarms(new Date('2026-11-29T06:00:00+07:00'));

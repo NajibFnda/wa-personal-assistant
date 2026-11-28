@@ -491,7 +491,8 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
   if (outboundLead && !/\b(tunda|snooze)\b/i.test(clean)) {
     const rawTarget = outboundLead[1].trim();
     const isNow = /\b(sekarang|langsung|saat\s+ini)\b/i.test(clean);
-    const isDaily = /\b(setiap\s+hari|tiap\s+hari|harian)\b/i.test(clean);
+    const dailyPeriodMatch = clean.match(/\b(?:setiap|tiap)\s+(hari|pagi|siang|sore|malam)\b/i);
+    const isDaily = Boolean(dailyPeriodMatch) || /\bharian\b/i.test(clean);
     const relDate = resolveRelativeIndonesianDate(clean, now);
     const isWeekly = !isDaily && /\b(tiap|setiap|rutin)\b/i.test(clean) && Boolean(relDate?.hari);
     const clockMatch = clean.match(
@@ -505,7 +506,9 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
     if (clockMatch) {
       let hour = Number(clockMatch[1]);
       const min = clockMatch[2] !== undefined ? Number(clockMatch[2]) : 0;
-      const period = (clockMatch[3] || '').toLowerCase().trim();
+      const period = (clockMatch[3] || (dailyPeriodMatch && dailyPeriodMatch[1] !== 'hari' ? dailyPeriodMatch[1] : '') || '')
+        .toLowerCase()
+        .trim();
       if (Number.isInteger(hour) && hour >= 0 && hour <= 23 && Number.isInteger(min) && min >= 0 && min <= 59) {
         if (period === 'siang' && hour >= 1 && hour <= 5) hour += 12;
         else if (period === 'sore' && hour >= 1 && hour <= 7) hour += 12;
@@ -521,12 +524,12 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
       if (!pesan) {
         pesan = clean
           .replace(outboundLead[0], ' ')
-          .replace(/\b(?:tolong|setiap\s+hari|tiap\s+hari|harian|rutin|tiap|setiap|mulai|dari|sekarang|langsung|saat\s+ini)\b/gi, ' ')
+          .replace(/\b(?:tolong|setiap\s+(?:hari|pagi|siang|sore|malam)|tiap\s+(?:hari|pagi|siang|sore|malam)|harian|rutin|tiap|setiap|mulai|dari|sekarang|langsung|saat\s+ini)\b/gi, ' ')
           .replace(relDate ? relDate.matchedText : '', ' ')
           .replace(clockMatch ? clockMatch[0] : '', ' ')
           .replace(intervalMatch ? intervalMatch[0] : '', ' ')
           .replace(maxMatch ? maxMatch[0] : '', ' ')
-          .replace(/\b(?:ulang(?:i)?|diulang|sampai\s+(?:dia\s+)?(?:balas|jawab)\s*(?:ok|oke)|sampai\s+(?:ok|oke)|sekali\s+saja|1x\s+saja|tanpa\s+ulang|jangan\s+ulang|pesan(?:nya)?|isi(?:nya)?)\b/gi, ' ')
+          .replace(/\b(?:dengan\s+pesan|ulang(?:i)?|diulang|sampai\s+(?:dia\s+)?(?:balas|jawab)\s*(?:ok|oke)|sampai\s+(?:ok|oke)|sekali\s+saja|1x\s+saja|tanpa\s+ulang|jangan\s+ulang|pesan(?:nya)?|isi(?:nya)?)\b/gi, ' ')
           .replace(/^(?:untuk|buat|bilang|kasih\s+tahu)\s+/i, '')
           .replace(/\s+/g, ' ')
           .trim();

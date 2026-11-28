@@ -2187,17 +2187,29 @@ export const contactRepo = {
     const raw = String(query || '').trim();
     if (!raw) return null;
     const lower = raw.toLowerCase();
+    const stripped = lower.replace(/(?:ku|nya)$/i, '').trim();
+    const candidates = [...new Set([lower, stripped].filter((s) => s.length >= 2))];
     const asPhone = normalizeWaPhone(raw);
     const all = this.list();
     if (asPhone) {
       const byPhone = all.find((c) => c.nomor === asPhone);
       if (byPhone) return byPhone;
     }
-    return (
-      all.find((c) => c.nama.toLowerCase() === lower) ||
-      all.find((c) => c.nama.toLowerCase().includes(lower) || lower.includes(c.nama.toLowerCase())) ||
-      null
-    );
+    for (const q of candidates) {
+      const exactName = all.find((c) => c.nama.toLowerCase() === q);
+      if (exactName) return exactName;
+    }
+    for (const q of candidates) {
+      const partialName = all.find(
+        (c) => c.nama.toLowerCase().includes(q) || q.includes(c.nama.toLowerCase())
+      );
+      if (partialName) return partialName;
+    }
+    for (const q of candidates) {
+      const byNote = all.find((c) => String(c.catatan || '').toLowerCase().includes(q));
+      if (byNote) return byNote;
+    }
+    return null;
   },
 
   upsert({ nama, nomor, catatan = '' }) {
