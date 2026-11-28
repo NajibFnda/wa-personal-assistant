@@ -414,36 +414,7 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
     };
   }
 
-  // 3. Retrieve Vault item ("liat anime", "lihat kripto", "minta pengumpulan paper", "kirim file modul")
-  const vaultGetMatch = clean.match(
-    /^(?:tolong\s+)?(?:minta|ambil(?:in|kan)?|kirim(?:in|kan)?|cari(?:in|kan)?|lih?at|cek|buka|tunjuk(?:in|kan)?|tampil(?:in|kan)?)\s+(?:(?:link|file|dokumen|gambar|foto|ss|item|vault)\s+)?(.+?)(?:\s+(?:di|dari)\s+vault)?\??$/i
-  );
-  if (
-    vaultGetMatch &&
-    !/\b(tugas|deadline|jadwal|presensi|memori|cerita|pacar|aktivitas|kegiatan|dia|doi|riwayat|history|pengeluaran|jajan|biaya|rekap|wishlist|momen|kemarin|lalu|catatan|kuliah|materi|rangkum|ringkas|kado|hadiah|kencan|date|weekend|budget|rekomendasi)\b/i.test(
-      clean
-    )
-  ) {
-    return {
-      intent: 'CARI_VAULT',
-      reply_message: 'Mencari di Quick Vault...',
-      payload: { kata_kunci: vaultGetMatch[1].trim() },
-    };
-  }
-
-  // 4. Snooze ("tunda 10 menit", "ingetin lagi 15 menit", "snooze 5 menit")
-  const snoozeMatch = clean.match(
-    /^(?:tolong\s+)?(?:tunda|snooze|ingetin\s+lagi|ingatkan\s+lagi)(?:\s+selama)?\s+(\d{1,3})\s*menit(?:\s+lagi)?$/i
-  );
-  if (snoozeMatch) {
-    return {
-      intent: 'SNOOZE_JADWAL',
-      reply_message: 'Siap, pengingat ditunda!',
-      payload: { menit_tunda: Number(snoozeMatch[1]) },
-    };
-  }
-
-  // 4A-EXT1. Save contact alias ("simpan kontak pacar 08123456789", "catat nomor budi 628123456789")
+  // 2A. Save contact alias ("simpan kontak pacar 08123456789", "catat nomor budi 628123456789")
   const saveContactMatch = clean.match(
     /^(?:tolong\s+)?(?:simpan|catat|tambah(?:kan)?|save)\s+(?:kontak|nomor(?:\s+wa)?)\s+([a-zA-Z0-9\s._-]{2,30}?)\s+([+\d][\d\s\-()]{8,18})$/i
   );
@@ -463,7 +434,7 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
     }
   }
 
-  // 4A-EXT2. Stop outbound alarm ("stop alarm ke pacar", "matikan pengingat ke 08123456789", "hentikan alarm orang lain")
+  // 2B. Stop outbound alarm ("stop alarm ke pacar", "matikan pengingat ke 08123456789", "hentikan alarm orang lain")
   const stopOutboundMatch = clean.match(
     /^(?:tolong\s+)?(?:stop|hentikan|matikan|batal(?:kan)?)\s+(?:semua\s+)?(?:alarm|pengingat)(?:\s+(?:ke|untuk|buat))?\s+(.+)$/i
   );
@@ -482,11 +453,11 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
     };
   }
 
-  // 4A-EXT3. Outbound alarm to another contact/number ("setiap hari jam 6 pagi kirim alarm ke pacar Bangun tidur tiap 10 menit sampai balas ok", "kirim alarm ke 08123456789 sekarang Bangun tiap 5 menit")
+  // 2C. Outbound alarm to another contact/number (MUST run BEFORE CARI_VAULT so "kirim alarm ..." is never hijacked!)
   const outboundLead = clean.match(
     /(?:kirim(?:kan)?|pasang(?:kan)?|buat(?:kan)?)\s+(?:alarm|pengingat)\s+(?:ke|untuk)\s+([+\d][\d\-]{7,16}|[a-zA-Z][a-zA-Z0-9._-]{1,24})\b/i
   ) || clean.match(
-    /(?:ingetin|ingatkan|bangunin)\s+([+\d][\d\-]{7,16}|pacar|doi|dia)\b/i
+    /(?:ingetin|ingatkan|bangunin)\s+([+\d][\d\-]{7,16}|pacar\w*|doi|dia)\b/i
   );
   if (outboundLead && !/\b(tunda|snooze)\b/i.test(clean)) {
     const rawTarget = outboundLead[1].trim();
@@ -496,9 +467,11 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
     const relDate = resolveRelativeIndonesianDate(clean, now);
     const isWeekly = !isDaily && /\b(tiap|setiap|rutin)\b/i.test(clean) && Boolean(relDate?.hari);
     const clockMatch = clean.match(
-      /\b(?:mulai\s+)?(?:jam|pukul|pkl)\s*(\d{1,2})(?:[:.](\d{2}))?(?:\s*(pagi|siang|sore|malam|dini\s+hari))?\b/i
+      /\b(?:mulai\s+)?(?:dari\s+)?(?:jam|pukul|pkl)\s*(\d{1,2})(?:[:.](\d{2}))?(?:\s*(pagi|siang|sore|malam|dini\s+hari))?\b/i
     );
-    const intervalMatch = clean.match(/\b(?:tiap|setiap|interval)\s+(\d{1,3})\s*(?:menit|mnt|m)\b/i);
+    const intervalMatch = clean.match(
+      /\b(?:(?:tiap|setiap|interval(?:\s+(?:pengulangan|ulang))?|pengulangan|ulang(?:i|an)?)\s*(?:tiap|setiap)?\s*)(\d{1,3})\s*(?:menit|mnt|m)\b/i
+    );
     const maxMatch = clean.match(/\b(?:maks(?:imal)?|max)\s+(\d{1,2})\s*(?:x|kali)?\b/i);
     const explicitOnce = /\b(sekali\s+saja|1x\s+saja|tanpa\s+ulang|jangan\s+ulang)\b/i.test(clean);
 
@@ -529,7 +502,7 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
           .replace(clockMatch ? clockMatch[0] : '', ' ')
           .replace(intervalMatch ? intervalMatch[0] : '', ' ')
           .replace(maxMatch ? maxMatch[0] : '', ' ')
-          .replace(/\b(?:dengan\s+pesan|ulang(?:i)?|diulang|sampai\s+(?:dia\s+)?(?:balas|jawab)\s*(?:ok|oke)|sampai\s+(?:ok|oke)|sekali\s+saja|1x\s+saja|tanpa\s+ulang|jangan\s+ulang|pesan(?:nya)?|isi(?:nya)?)\b/gi, ' ')
+          .replace(/\b(?:dengan\s+pesan|ulang(?:i)?|diulang|sampai\s+(?:dia\s+)?(?:balas|jawab|dibalas)\s*(?:ok|oke)|sampai\s+(?:ok|oke)|sekali\s+saja|1x\s+saja|tanpa\s+ulang|jangan\s+ulang|pesan(?:nya)?|isi(?:nya)?)\b/gi, ' ')
           .replace(/^(?:untuk|buat|bilang|kasih\s+tahu)\s+/i, '')
           .replace(/\s+/g, ' ')
           .trim();
@@ -565,6 +538,35 @@ export function tryLocalFastIntent({ text = '', hasMedia = false, fileName = nul
         },
       };
     }
+  }
+
+  // 3. Retrieve Vault item ("liat anime", "lihat kripto", "minta pengumpulan paper", "kirim file modul")
+  const vaultGetMatch = clean.match(
+    /^(?:tolong\s+)?(?:minta|ambil(?:in|kan)?|kirim(?:in|kan)?|cari(?:in|kan)?|lih?at|cek|buka|tunjuk(?:in|kan)?|tampil(?:in|kan)?)\s+(?:(?:link|file|dokumen|gambar|foto|ss|item|vault)\s+)?(.+?)(?:\s+(?:di|dari)\s+vault)?\??$/i
+  );
+  if (
+    vaultGetMatch &&
+    !/\b(alarm|pengingat|kontak|interval|menit|jam|pukul|ulang\w*|ring|dering|telpon|telepon|bangun\w*|tugas|deadline|jadwal|presensi|memori|cerita|pacar\w*|aktivitas|kegiatan|dia|doi|riwayat|history|pengeluaran|jajan|biaya|rekap|wishlist|momen|kemarin|lalu|catatan|kuliah|materi|rangkum|ringkas|kado|hadiah|kencan|date|weekend|budget|rekomendasi)\b/i.test(
+      clean
+    )
+  ) {
+    return {
+      intent: 'CARI_VAULT',
+      reply_message: 'Mencari di Quick Vault...',
+      payload: { kata_kunci: vaultGetMatch[1].trim() },
+    };
+  }
+
+  // 4. Snooze ("tunda 10 menit", "ingetin lagi 15 menit", "snooze 5 menit")
+  const snoozeMatch = clean.match(
+    /^(?:tolong\s+)?(?:tunda|snooze|ingetin\s+lagi|ingatkan\s+lagi)(?:\s+selama)?\s+(\d{1,3})\s*menit(?:\s+lagi)?$/i
+  );
+  if (snoozeMatch) {
+    return {
+      intent: 'SNOOZE_JADWAL',
+      reply_message: 'Siap, pengingat ditunda!',
+      payload: { menit_tunda: Number(snoozeMatch[1]) },
+    };
   }
 
   // 4B. Quick Reminder ("ingetin 30 menit lagi angkat jemuran", "ingatkan 2 jam lagi bayar kos pakai ring")

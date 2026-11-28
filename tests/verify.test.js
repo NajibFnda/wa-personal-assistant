@@ -1184,6 +1184,17 @@ describe('All-in-One Personal Assistant End-to-End Verification (Isolated Test D
     assert.equal(pagiIntent?.payload?.ulang_sampai_ok, true);
     assert.equal(contactRepo.findByNameOrNumber('pacarku')?.nama, 'Pacar');
 
+    // Regression: exact user phrasing starting with "kirim alarm ke pacarku ..." + "interval pengulangan 15 menit" MUST NOT be hijacked by CARI_VAULT!
+    const exactUserMsg =
+      'kirim alarm ke pacarku dengan pesan "SAYAAANGGGG APIIIII" tiap pagi mulai dari jam 6 sampai dibalas ok, ulangi tiap pagi jam segitu, interval pengulangan 15 menit';
+    const exactIntent = tryLocalFastIntent({ text: exactUserMsg, hasMedia: false, now });
+    assert.equal(exactIntent?.intent, 'KIRIM_ALARM_ORANG');
+    assert.equal(exactIntent?.payload?.mode_jadwal, 'HARIAN');
+    assert.equal(exactIntent?.payload?.jam, '06:00');
+    assert.equal(exactIntent?.payload?.judul, 'SAYAAANGGGG APIIIII');
+    assert.equal(exactIntent?.payload?.interval_menit, 15);
+    assert.equal(exactIntent?.payload?.ulang_sampai_ok, true);
+
     // 3. Fire at 06:00 WIB next morning -> sends #1 to target & queues repeat for 06:10
     const beforeTarget = sentTargetMessages.length;
     const fired0600 = await checkOutboundAlarms(new Date('2026-11-29T06:00:00+07:00'));
